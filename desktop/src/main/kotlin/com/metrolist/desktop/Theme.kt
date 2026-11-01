@@ -5,7 +5,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
-internal val LocalPalette = staticCompositionLocalOf { paletteOf("rose", "ink", "soft", "normal") }
+internal val LocalPalette = staticCompositionLocalOf { paletteOf("mint", "ink", "soft", "normal") }
 
 internal data class Palette(
     val ink: Color,
@@ -18,7 +18,7 @@ internal data class Palette(
 )
 
 internal data class Look(
-    val accentId: String = "rose",
+    val accentId: String = "mint",
     val surfaceId: String = "ink",
     val cornerId: String = "soft",
     val cardId: String = "normal",
@@ -28,7 +28,7 @@ internal data class Look(
 
     companion object {
         fun from(settings: Settings) = Look(
-            accentId = settings.accent.ifBlank { "rose" },
+            accentId = settings.accent.ifBlank { "mint" },
             surfaceId = settings.surface.ifBlank { "ink" },
             cornerId = settings.corners.ifBlank { "soft" },
             cardId = settings.cards.ifBlank { "normal" },
@@ -39,6 +39,7 @@ internal data class Look(
 internal data class AccentChoice(val id: String, val label: String, val color: Color)
 
 internal val accentChoices = listOf(
+    AccentChoice("mint", "Nane", Color(0xFF1ED760)),
     AccentChoice("rose", "Gül", Color(0xFFFF4D6D)),
     AccentChoice("amber", "Kehribar", Color(0xFFF5A524)),
     AccentChoice("lime", "Yeşil", Color(0xFF7CDE6A)),
@@ -50,7 +51,7 @@ internal val accentChoices = listOf(
 internal data class SurfaceChoice(val id: String, val label: String, val ink: Color, val panel: Color, val card: Color)
 
 internal val surfaceChoices = listOf(
-    SurfaceChoice("ink", "Gece", Color(0xFF0E0E10), Color(0xFF16161A), Color(0xFF222228)),
+    SurfaceChoice("ink", "Mürekkep", Color(0xFF0B0C0E), Color(0xFF121316), Color(0xFF1A1C20)),
     SurfaceChoice("coal", "Kömür", Color(0xFF070708), Color(0xFF101012), Color(0xFF1C1C22)),
     SurfaceChoice("slate", "Arduvaz", Color(0xFF12151C), Color(0xFF1A1F2B), Color(0xFF242B3A)),
     SurfaceChoice("navy", "Lacivert", Color(0xFF0C1220), Color(0xFF141B2D), Color(0xFF1C2740)),
@@ -64,7 +65,7 @@ internal val cornerChoices = listOf(
 )
 
 internal val cardChoices = listOf(
-    "compact" to "Sıkı",
+    "compact" to "Kompakt",
     "normal" to "Normal",
     "wide" to "Geniş",
 )

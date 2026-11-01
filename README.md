@@ -4,10 +4,14 @@ Masaüstü için YouTube Music istemcisi. Telefon uygulamasının yerine geçmez
 
 İngilizce özet: a third-party YouTube Music client for Windows. It is not affiliated with YouTube, Google, or Spotify.
 
+![Metrolist penceresi](docs/ekran.png)
+
 ## Ne yapar
 
 - Oturum açmadan şarkı çalar. Akış, herkese açık Invidious ve Piped uçlarından gelir; onlar yetmezse Innertube yedeği denenir.
-- Ana sayfa, arama, keşfet, albüm, sanatçı ve çalma listesi.
+- Ana sayfa, arama, albüm, sanatçı ve çalma listesi.
+- Keşfet: Pop, Rap, Rock, Arabesk, Halk, Caz, Elektronik ve Akustik rafları, yeni çıkanlar ve ruh halleri.
+- Bu bilgisayarda beğenilenler ve yerel çalma listeleri. Çerez olmadan da durur.
 - Çaldığın şarkı bitince benzerleri sıraya eklenir, çalma devam eder.
 - Kitaplık (beğenilenler, listeler, albümler, sanatçılar) için music.youtube.com çerezi. Çerez olmadan çalma açıktır.
 - Bu bilgisayardaki dinleme geçmişi.

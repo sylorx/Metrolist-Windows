@@ -26,6 +26,9 @@ sealed interface Dest {
     data object History : Dest
     data object Explore : Dest
     data object Settings : Dest
+    data object Liked : Dest
+    data object Shortcuts : Dest
+    data class LocalList(val id: String) : Dest
     data class Album(val browseId: String) : Dest
     data class Artist(val browseId: String) : Dest
     data class Playlist(val playlistId: String) : Dest
@@ -63,11 +66,37 @@ fun appDir(): File =
 data class Settings(
     val cookie: String = "",
     val quality: String = "AUTO",
-    val accent: String = "rose",
+    val accent: String = "mint",
     val surface: String = "ink",
     val corners: String = "soft",
     val cards: String = "normal",
 )
+
+@Serializable
+data class SavedTrack(
+    val id: String,
+    val title: String,
+    val artists: String,
+    val thumbnail: String? = null,
+    val durationMs: Long = 0,
+)
+
+@Serializable
+data class LocalPlaylist(
+    val id: String,
+    val title: String,
+    val tracks: List<SavedTrack> = emptyList(),
+)
+
+@Serializable
+data class LocalLibrary(
+    val liked: List<SavedTrack> = emptyList(),
+    val playlists: List<LocalPlaylist> = emptyList(),
+)
+
+fun Track.toSaved() = SavedTrack(id, title, artists, thumbnail, durationMs)
+
+fun SavedTrack.toTrack() = Track(id, title, artists, thumbnail, durationMs)
 
 @Serializable
 data class HistoryEntry(

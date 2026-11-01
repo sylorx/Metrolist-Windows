@@ -52,6 +52,7 @@ class AppModel {
     var status by mutableStateOf<String?>(null)
     var home by mutableStateOf<HomePage?>(null)
     var homeContinuation by mutableStateOf<String?>(null)
+    var homePaging by mutableStateOf(false)
     var query by mutableStateOf("")
     var suggestions by mutableStateOf<List<String>>(emptyList())
     var searchFilter by mutableStateOf(YouTube.SearchFilter.FILTER_SONG)
@@ -66,17 +67,26 @@ class AppModel {
     var libraryItems by mutableStateOf<List<YTItem>>(emptyList())
     var libraryContinuation by mutableStateOf<String?>(null)
     var history by mutableStateOf(store.history)
+    var liked by mutableStateOf(store.library.liked)
+    var localPlaylists by mutableStateOf(store.library.playlists)
     var remoteHistory by mutableStateOf<List<HistoryPage.HistorySection>>(emptyList())
     var explore by mutableStateOf<ExplorePage?>(null)
     var charts by mutableStateOf<ChartsPage?>(null)
     var moods by mutableStateOf<List<MoodAndGenres>>(emptyList())
     var releases by mutableStateOf<List<AlbumItem>>(emptyList())
+    var categoryId by mutableStateOf<String?>(null)
+    var categoryTitle by mutableStateOf("")
+    var categorySongs by mutableStateOf<List<SongItem>>(emptyList())
+    var categoryAlbums by mutableStateOf<List<AlbumItem>>(emptyList())
+    var categoryLists by mutableStateOf<List<PlaylistItem>>(emptyList())
+    var categoryLoading by mutableStateOf(false)
     var accountName by mutableStateOf<String?>(null)
     var cookieDraft by mutableStateOf(store.settings.cookie)
     internal var look by mutableStateOf(Look.from(store.settings))
     var quality by mutableStateOf(store.settings.quality)
     var playlistsForAdd by mutableStateOf<List<PlaylistItem>>(emptyList())
     var showAdd by mutableStateOf(false)
+    var showCreate by mutableStateOf(false)
     var newPlaylistTitle by mutableStateOf("")
     private var loadGeneration by mutableIntStateOf(0)
     private var suggestJob: Job? = null
@@ -86,6 +96,7 @@ class AppModel {
     init {
         applyCookie(store.settings.cookie)
         updates.start()
+        startLiveFeed()
     }
 
     fun openRail(dest: Dest) {
@@ -114,6 +125,12 @@ class AppModel {
             loading = false
             error = failure?.message
         }
+    }
+
+    fun submitSearch() {
+        val text = query.trim()
+        if (current !is Dest.Search) stack = listOf(Dest.Search)
+        if (text.isNotBlank()) search(text)
     }
 
     fun search(text: String = query) {
@@ -155,14 +172,16 @@ class AppModel {
         }
     }
 
+    private var homeLoadedAt = 0L
+
     fun loadMoreHome() {
-        val token = homeContinuation ?: return
+        val now = System.currentTimeMillis()
+        if (homePaging || home == null || now - homeLoadedAt < 700) return
+        homeLoadedAt = now
+        homePaging = true
         scope.launch {
-            val result = withContext(Dispatchers.IO) { YouTube.home(continuation = token) }
-            result.onSuccess { page ->
-                home = home?.copy(sections = home?.sections.orEmpty() + page.sections, continuation = page.continuation)
-                homeContinuation = page.continuation
-            }
+            runCatching { appendHome() }
+            homePaging = false
         }
     }
 
@@ -208,44 +227,167 @@ class AppModel {
         player.playAll(songs.map { it.toTrack() }, start)
     }
 
-    fun likeCurrent() {
-        val id = player.current?.id ?: return
+    fun openGenre(id: String, title: String, query: String) {
+        if (categoryId == id) {
+            categoryId = null
+            return
+        }
+        categoryId = id
+        categoryTitle = title
+        categoryLoading = true
+        categorySongs = emptyList()
+        categoryAlbums = emptyList()
+        categoryLists = emptyList()
         scope.launch {
-            val result = withContext(Dispatchers.IO) { YouTube.likeVideo(id, true) }
-            status = if (result.isSuccess) "Beğenildi" else result.exceptionOrNull()?.message
+            val songs = async(Dispatchers.IO) {
+                YouTube.search(query, YouTube.SearchFilter.FILTER_SONG).getOrNull()?.items?.filterIsInstance<SongItem>().orEmpty()
+            }
+            val albums = async(Dispatchers.IO) {
+                YouTube.search(query, YouTube.SearchFilter.FILTER_ALBUM).getOrNull()?.items?.filterIsInstance<AlbumItem>().orEmpty()
+            }
+            val lists = async(Dispatchers.IO) {
+                YouTube.search(query, YouTube.SearchFilter.FILTER_COMMUNITY_PLAYLIST).getOrNull()?.items?.filterIsInstance<PlaylistItem>().orEmpty()
+            }
+            val songItems = songs.await()
+            val albumItems = albums.await()
+            val listItems = lists.await()
+            if (categoryId != id) return@launch
+            categorySongs = songItems.take(10)
+            categoryAlbums = albumItems.take(12)
+            categoryLists = listItems.take(12)
+            categoryLoading = false
+        }
+    }
+
+    fun likeCurrent() {
+        val track = player.current ?: return
+        val added = store.toggleLike(track.toSaved())
+        liked = store.library.liked
+        status = if (added) "Beğenildi" else "Beğeni kaldırıldı"
+        if (added && store.settings.cookie.isNotBlank()) {
+            scope.launch(Dispatchers.IO) { runCatching { YouTube.likeVideo(track.id, true) } }
         }
     }
 
     fun prepareAdd() {
-        if (store.settings.cookie.isBlank()) {
-            status = "Listeye eklemek için ayarlardan giriş yap"
+        val track = player.current ?: return
+        if (localPlaylists.isEmpty()) {
+            status = "Önce Kitaplık’tan bir liste oluştur"
             return
         }
         showAdd = true
+        if (store.settings.cookie.isBlank()) return
         scope.launch {
             val page = withContext(Dispatchers.IO) { YouTube.library("FEmusic_liked_playlists").getOrNull() }
-            playlistsForAdd = page?.items?.filterIsInstance<PlaylistItem>().orEmpty()
+            val remote = page?.items?.filterIsInstance<PlaylistItem>().orEmpty()
+            if (player.current?.id == track.id) playlistsForAdd = remote
         }
     }
 
     fun addCurrentTo(playlistId: String) {
-        val id = player.current?.id ?: return
+        val track = player.current ?: return
+        if (playlistId.startsWith("local-")) {
+            store.addToPlaylist(playlistId, track.toSaved())
+            localPlaylists = store.library.playlists
+            status = "Listeye eklendi"
+            showAdd = false
+            return
+        }
         scope.launch {
-            val result = withContext(Dispatchers.IO) { YouTube.addToPlaylist(playlistId, id) }
-            status = if (result.isSuccess) "Listeye eklendi" else result.exceptionOrNull()?.message
+            val result = withContext(Dispatchers.IO) { YouTube.addToPlaylist(playlistId, track.id) }
+            status = if (result.isSuccess) "YouTube listesine eklendi" else result.exceptionOrNull()?.message
             showAdd = false
         }
     }
 
     fun createPlaylist() {
         val title = newPlaylistTitle.trim()
-        if (title.isBlank()) return
-        scope.launch {
-            val id = runCatching { withContext(Dispatchers.IO) { YouTube.createPlaylist(title) } }
-            status = id.fold({ "Liste oluşturuldu" }, { it.message })
-            newPlaylistTitle = ""
-            if (current == Dest.Library) refresh()
+        if (title.isBlank()) {
+            status = "Liste adı yaz"
+            return
         }
+        store.createPlaylist(title)
+        localPlaylists = store.library.playlists
+        newPlaylistTitle = ""
+        showCreate = false
+        status = "Liste oluşturuldu"
+        if (store.settings.cookie.isNotBlank()) {
+            scope.launch(Dispatchers.IO) { runCatching { YouTube.createPlaylist(title) } }
+        }
+    }
+
+    fun openLocal(id: String) {
+        open(Dest.LocalList(id))
+    }
+
+    private fun startLiveFeed() {
+        scope.launch {
+            while (true) {
+                delay(45_000)
+                when (current) {
+                    Dest.Explore -> loadExplore()
+                    else -> Unit
+                }
+            }
+        }
+    }
+
+    private val homeMix = listOf(
+        "türkçe pop",
+        "arabesk",
+        "türkçe rock",
+        "lofi",
+        "türkçe rap",
+        "akustik",
+        "caz",
+        "elektronik",
+        "halk müziği",
+        "indie",
+        "90lar türkçe",
+        "oyun müziği",
+    )
+    private var homeMixCursor = 0
+    private val seenHome = mutableSetOf<String>()
+
+    private suspend fun appendHome() {
+        val token = homeContinuation
+        if (!token.isNullOrBlank()) {
+            val page = withContext(Dispatchers.IO) { YouTube.home(continuation = token).getOrNull() }
+            if (page != null && page.sections.isNotEmpty()) {
+                addHomeSections(page.sections)
+                homeContinuation = page.continuation
+                return
+            }
+            homeContinuation = null
+        }
+        if (homeMixCursor >= homeMix.size * 3) return
+        val query = homeMix[homeMixCursor % homeMix.size]
+        val filter = when (homeMixCursor / homeMix.size) {
+            0 -> YouTube.SearchFilter.FILTER_SONG
+            1 -> YouTube.SearchFilter.FILTER_ALBUM
+            else -> YouTube.SearchFilter.FILTER_COMMUNITY_PLAYLIST
+        }
+        homeMixCursor++
+        val found = withContext(Dispatchers.IO) { YouTube.search(query, filter).getOrNull() }?.items.orEmpty()
+            .distinctBy { it.id }
+            .take(14)
+        if (found.isEmpty()) return
+        val title = when (filter) {
+            YouTube.SearchFilter.FILTER_ALBUM -> "$query albümleri"
+            YouTube.SearchFilter.FILTER_COMMUNITY_PLAYLIST -> "$query listeleri"
+            else -> "$query"
+        }
+        addHomeSections(listOf(HomePage.Section(title, null, null, null, found)))
+    }
+
+    private fun addHomeSections(incoming: List<HomePage.Section>) {
+        val current = home ?: return
+        val fresh = incoming.filter { section ->
+            val key = section.title + section.items.take(4).joinToString { it.id }
+            seenHome.add(key)
+        }
+        if (fresh.isEmpty()) return
+        home = current.copy(sections = current.sections + fresh)
     }
 
     fun saveCookie() {
@@ -304,6 +446,9 @@ class AppModel {
                     accountName = withContext(Dispatchers.IO) { YouTube.accountInfo().getOrNull()?.name }
                 }
             }
+            Dest.Liked -> liked = store.library.liked
+            Dest.Shortcuts -> Unit
+            is Dest.LocalList -> Unit
             is Dest.Album -> album = withContext(Dispatchers.IO) { YouTube.album(dest.browseId).getOrThrow() }
             is Dest.Artist -> artist = withContext(Dispatchers.IO) { YouTube.artist(dest.browseId).getOrThrow() }
             is Dest.Playlist -> {

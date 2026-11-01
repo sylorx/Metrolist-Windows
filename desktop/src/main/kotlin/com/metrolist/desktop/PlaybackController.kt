@@ -40,6 +40,7 @@ class PlaybackController(
     var showQueue by mutableStateOf(false)
     var showLyrics by mutableStateOf(false)
     var lyrics by mutableStateOf<String?>(null)
+    private var volumeBeforeMute = 1f
     private var activeGeneration = 0
     private var activeStartMs = 0L
     private var attempt = 0
@@ -56,6 +57,14 @@ class PlaybackController(
         if (tracks.isEmpty()) return
         queue = tracks
         index = start.coerceIn(0, tracks.lastIndex)
+        startCurrent(0)
+    }
+
+    fun playShuffled(tracks: List<Track>) {
+        if (tracks.isEmpty()) return
+        shuffle = true
+        queue = tracks.shuffled()
+        index = 0
         startCurrent(0)
     }
 
@@ -95,6 +104,15 @@ class PlaybackController(
     fun changeVolume(value: Float) {
         volume = value.coerceIn(0f, 1f)
         ffmpeg.volume = volume
+    }
+
+    fun toggleMute() {
+        if (volume > 0.001f) {
+            volumeBeforeMute = volume
+            changeVolume(0f)
+        } else {
+            changeVolume(volumeBeforeMute.coerceAtLeast(0.2f))
+        }
     }
 
     fun toggleShuffle() {
