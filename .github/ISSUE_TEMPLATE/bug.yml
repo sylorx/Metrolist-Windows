@@ -1,0 +1,66 @@
+name: Hata
+description: Beklenmeyen bir davranışı bildirin.
+title: "Hata: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Güvenlik açığı ise bu formu kullanmayın. `SECURITY.md` içindeki özel bildirim yolunu izleyin. Parola, çerez ve belirteç yapıştırmayın.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Özet
+      description: Ne bozuldu?
+      placeholder: Arama sonucu açılmıyor
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Beklenen davranış
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Gerçekleşen davranış
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Yeniden üretme adımları
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Uygulama sürümü
+      placeholder: "1.0.0"
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows sürümü
+      placeholder: "Windows 11 24H2"
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Ek bilgi
+      description: Günlük veya ekran görüntüsü. Gizli bilgi eklemeyin.
+    validations:
+      required: false

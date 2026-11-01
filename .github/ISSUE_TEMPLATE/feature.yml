@@ -1,0 +1,37 @@
+name: Özellik
+description: Yeni bir davranış önerin.
+title: "Özellik: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Tek bir istek için bir issue açın. Güvenlik açığını buraya yazmayın; `SECURITY.md` yolunu kullanın.
+
+  - type: textarea
+    id: need
+    attributes:
+      label: İhtiyaç
+      description: Bu istek hangi eksikliği kapatıyor?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Önerilen çözüm
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatifler
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Ek bağlam
+    validations:
+      required: false
