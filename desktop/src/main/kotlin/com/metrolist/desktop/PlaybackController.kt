@@ -5,10 +5,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.metrolist.innertube.YouTube
 import com.metrolist.innertube.models.WatchEndpoint
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicInteger
@@ -27,8 +29,10 @@ class PlaybackController(
         onError = { message -> scope.launch { onStreamFailed(message) } },
     )
 
-    var queue by mutableStateOf<List<Track>>(emptyList())
-    var index by mutableStateOf(-1)
+    internal var queueState by mutableStateOf(QueueState())
+        private set
+    internal val queue: List<QueueEntry> get() = queueState.entries
+    internal val index: Int get() = queueState.index
     var shuffle by mutableStateOf(false)
     var repeat by mutableStateOf(RepeatMode.Off)
     var positionMs by mutableStateOf(0L)
@@ -49,23 +53,53 @@ class PlaybackController(
     private var activeStream: StreamResolver.Stream? = null
     private var kept = false
     private var radioJob: Job? = null
-    private var radioFor: String? = null
+    private var radioToken: RadioToken? = null
 
-    val current: Track? get() = queue.getOrNull(index)
+    val current: Track? get() = queueState.current
 
     fun playAll(tracks: List<Track>, start: Int) {
         if (tracks.isEmpty()) return
-        queue = tracks
-        index = start.coerceIn(0, tracks.lastIndex)
-        startCurrent(0)
+        edit(queueState.replace(tracks, start))
     }
 
     fun playShuffled(tracks: List<Track>) {
         if (tracks.isEmpty()) return
         shuffle = true
-        queue = tracks.shuffled()
-        index = 0
-        startCurrent(0)
+        edit(queueState.replace(tracks.shuffled(), 0))
+    }
+
+    fun playNext(tracks: List<Track>) {
+        if (tracks.isEmpty()) return
+        edit(queueState.playNext(tracks))
+    }
+
+    fun addToQueue(tracks: List<Track>) {
+        if (tracks.isEmpty()) return
+        edit(queueState.append(tracks))
+    }
+
+    fun removeFromQueue(key: Long) {
+        edit(queueState.remove(key))
+    }
+
+    fun moveUp(key: Long) {
+        edit(queueState.moveUp(key))
+    }
+
+    fun moveDown(key: Long) {
+        edit(queueState.moveDown(key))
+    }
+
+    fun moveToPlayNext(key: Long) {
+        edit(queueState.moveToPlayNext(key))
+    }
+
+    fun moveToEnd(key: Long) {
+        edit(queueState.moveToEnd(key))
+    }
+
+    fun clearQueue() {
+        edit(queueState.clear())
     }
 
     fun toggle() {
@@ -96,9 +130,7 @@ class PlaybackController(
     }
 
     fun jumpTo(queueIndex: Int) {
-        if (queueIndex !in queue.indices) return
-        index = queueIndex
-        startCurrent(0)
+        edit(queueState.jump(queueIndex))
     }
 
     fun changeVolume(value: Float) {
@@ -175,8 +207,11 @@ class PlaybackController(
                 else -> return
             }
         }
-        index = nextIndex
-        startCurrent(0)
+        if (nextIndex == index) {
+            startCurrent(0)
+            return
+        }
+        edit(queueState.jump(nextIndex))
     }
 
     private fun onTrackEnded() {
@@ -190,8 +225,12 @@ class PlaybackController(
         }
         val job = radioJob
         if (job != null && job.isActive) {
-            job.invokeOnCompletion {
+            val epoch = queueState.epoch
+            val anchor = queueState.currentKey
+            job.invokeOnCompletion { cause ->
+                if (cause != null) return@invokeOnCompletion
                 scope.launch {
+                    if (queueState.epoch != epoch || queueState.currentKey != anchor) return@launch
                     if (hasUpcoming()) move(1) else isPlaying = false
                 }
             }
@@ -205,6 +244,39 @@ class PlaybackController(
         shuffle -> queue.size > 1
         repeat == RepeatMode.All -> true
         else -> index < queue.lastIndex
+    }
+
+    private fun edit(next: QueueState) {
+        val effect = playbackRestart(queueState, next)
+        if (effect == PlaybackEffect.None) return
+        if (effect != PlaybackEffect.Keep) {
+            radioJob?.cancel()
+            radioJob = null
+            radioToken = null
+        }
+        queueState = next
+        when (effect) {
+            PlaybackEffect.Start -> startCurrent(0)
+            PlaybackEffect.Stop -> halt()
+            PlaybackEffect.Keep, PlaybackEffect.None -> Unit
+        }
+    }
+
+    private fun halt() {
+        playGeneration.incrementAndGet()
+        activeGeneration = playGeneration.get()
+        radioJob?.cancel()
+        radioJob = null
+        radioToken = null
+        scope.launch(Dispatchers.IO) { ffmpeg.stop() }
+        isPlaying = false
+        busy = false
+        positionMs = 0L
+        durationMs = 0L
+        error = null
+        lyrics = null
+        activeStream = null
+        kept = false
     }
 
     private fun startCurrent(startMs: Long) {
@@ -319,17 +391,25 @@ class PlaybackController(
     }
 
     private fun ensureRadio() {
-        val track = current ?: return
-        if (queue.size - index - 1 >= 8) return
-        if (radioFor == track.id && radioJob?.isActive == true) return
-        radioFor = track.id
+        val state = queueState
+        val track = state.current ?: return
+        if (state.entries.size - state.index - 1 >= RadioLookahead) return
+        val token = state.radioToken()
+        if (radioToken == token && radioJob?.isActive == true) return
+        radioJob?.cancel()
+        radioJob = null
+        radioToken = token
         val seed = track
         radioJob = scope.launch {
-            val extra = runCatching { withContext(Dispatchers.IO) { similarTracks(seed) } }.getOrDefault(emptyList())
-            if (extra.isEmpty() || current == null) return@launch
-            val known = queue.map { it.id }.toSet()
-            val fresh = extra.filter { it.id !in known }
-            if (fresh.isNotEmpty()) queue = queue + fresh
+            val extra = try {
+                withContext(Dispatchers.IO) { similarTracks(seed) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                emptyList()
+            }
+            ensureActive()
+            edit(mergeRadio(queueState, token, extra))
         }
     }
 

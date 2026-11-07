@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+
 package com.metrolist.desktop
 
 import androidx.compose.animation.AnimatedContent
@@ -53,7 +55,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.GraphicEq
@@ -77,7 +83,10 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -113,6 +122,9 @@ import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerButton
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -525,8 +537,11 @@ private fun HomeScreen(model: AppModel) {
                     model.open(Dest.Liked)
                 }
                 recent.forEach { entry ->
-                    QuickTile(entry.title, entry.artists, entry.thumbnail, accentTile = false) {
-                        model.player.playAll(listOf(Track(entry.id, entry.title, entry.artists, entry.thumbnail, 0)), 0)
+                    val track = Track(entry.id, entry.title, entry.artists, entry.thumbnail, 0)
+                    QueueMenuTarget(model, track) {
+                        QuickTile(entry.title, entry.artists, entry.thumbnail, accentTile = false) {
+                            model.player.playAll(listOf(track), 0)
+                        }
                     }
                 }
             }
@@ -536,8 +551,11 @@ private fun HomeScreen(model: AppModel) {
             item {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     items(recent, key = { it.id }) { entry ->
-                        PlayedCard(entry, 0) {
-                            model.player.playAll(listOf(Track(entry.id, entry.title, entry.artists, entry.thumbnail, 0)), 0)
+                        val track = Track(entry.id, entry.title, entry.artists, entry.thumbnail, 0)
+                        QueueMenuTarget(model, track) {
+                            PlayedCard(entry, 0) {
+                                model.player.playAll(listOf(track), 0)
+                            }
                         }
                     }
                 }
@@ -628,6 +646,13 @@ private fun Cover(
 
 @Composable
 private fun MediaCard(item: YTItem, model: AppModel) {
+    QueueMenuTarget(model, item.asTrack()) {
+        MediaCardBody(item, model)
+    }
+}
+
+@Composable
+private fun MediaCardBody(item: YTItem, model: AppModel) {
     val palette = LocalPalette.current
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
@@ -714,7 +739,15 @@ private fun SearchScreen(model: AppModel) {
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             itemsIndexed(model.searchItems, key = { index, item -> item.id + index }) { _, item ->
                 val duration = (item as? SongItem)?.duration?.takeIf { it > 0 }?.let { formatTime(it * 1000L) }
-                SongRow(item.title, itemSubtitle(item), item.thumbnail, duration, item.id) { model.openItem(item) }
+                SongRow(
+                    item.title,
+                    itemSubtitle(item),
+                    item.thumbnail,
+                    duration,
+                    item.id,
+                    track = item.asTrack(),
+                    model = model,
+                ) { model.openItem(item) }
             }
             if (model.searchContinuation != null) {
                 item { Button(onClick = model::loadMoreSearch) { Text("Daha fazla") } }
@@ -796,7 +829,14 @@ private fun LibraryScreen(model: AppModel) {
             }
             items(model.liked.take(8), key = { "lib-" + it.id }) { track ->
                 val tracks = model.liked.map { it.toTrack() }
-                SongRow(track.title, track.artists, track.thumbnail, id = track.id) {
+                SongRow(
+                    track.title,
+                    track.artists,
+                    track.thumbnail,
+                    id = track.id,
+                    track = track.toTrack(),
+                    model = model,
+                ) {
                     model.player.playAll(tracks, tracks.indexOfFirst { it.id == track.id }.coerceAtLeast(0))
                 }
             }
@@ -811,7 +851,13 @@ private fun LibraryScreen(model: AppModel) {
                 }
             }
             items(model.libraryItems, key = { "yt-" + it.id + it.title }) { item ->
-                SongRow(item.title, itemSubtitle(item), item.thumbnail) { model.openItem(item) }
+                SongRow(
+                    item.title,
+                    itemSubtitle(item),
+                    item.thumbnail,
+                    track = item.asTrack(),
+                    model = model,
+                ) { model.openItem(item) }
             }
             if (model.libraryContinuation != null) {
                 item { Button(onClick = model::loadMoreLibrary) { Text("Daha fazla") } }
@@ -1019,6 +1065,8 @@ private fun SavedTracks(
                     trailing = track.durationMs.takeIf { it > 0 }?.let { formatTime(it) },
                     id = track.id,
                     index = "${index + 1}",
+                    track = track.toTrack(),
+                    model = model,
                 ) {
                     model.player.playAll(shown.map { it.toTrack() }, index)
                 }
@@ -1079,9 +1127,11 @@ private fun HistoryScreen(model: AppModel) {
             item {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     items(top, key = { it.first.id }) { (entry, count) ->
-                        PlayedCard(entry, count) {
-                            val start = tracks.indexOfFirst { it.id == entry.id }.coerceAtLeast(0)
-                            model.player.playAll(tracks, start)
+                        QueueMenuTarget(model, Track(entry.id, entry.title, entry.artists, entry.thumbnail, 0)) {
+                            PlayedCard(entry, count) {
+                                val start = tracks.indexOfFirst { it.id == entry.id }.coerceAtLeast(0)
+                                model.player.playAll(tracks, start)
+                            }
                         }
                     }
                 }
@@ -1092,7 +1142,15 @@ private fun HistoryScreen(model: AppModel) {
             item { Text("Bir şarkı açınca burada görünür.", color = Muted) }
         }
         itemsIndexed(unique.take(40), key = { _, entry -> entry.id }) { index, entry ->
-            SongRow(entry.title, entry.artists, entry.thumbnail, id = entry.id, index = "${index + 1}") {
+            SongRow(
+                entry.title,
+                entry.artists,
+                entry.thumbnail,
+                id = entry.id,
+                index = "${index + 1}",
+                track = Track(entry.id, entry.title, entry.artists, entry.thumbnail, 0),
+                model = model,
+            ) {
                 model.player.playAll(tracks, index)
             }
         }
@@ -1102,7 +1160,13 @@ private fun HistoryScreen(model: AppModel) {
         model.remoteHistory.forEach { section ->
             item { Text(section.title, color = Muted) }
             items(section.songs, key = { section.title + it.id }) { song ->
-                SongRow(song.title, song.artists.joinToString { it.name }, song.thumbnail) {
+                SongRow(
+                    song.title,
+                    song.artists.joinToString { it.name },
+                    song.thumbnail,
+                    track = song.toTrack(),
+                    model = model,
+                ) {
                     model.playSongs(section.songs, section.songs.indexOf(song))
                 }
             }
@@ -1213,7 +1277,16 @@ private fun ExploreScreen(model: AppModel) {
             item { Text(rising?.title ?: "Yükselenler", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = Color.White) }
             items(risingSongs, key = { it.id }) { song ->
                 val index = risingSongs.indexOf(song)
-                SongRow(song.title, song.artists.joinToString { it.name }, song.thumbnail, formatTime((song.duration ?: 0) * 1000L), id = song.id, index = "${index + 1}") {
+                SongRow(
+                    song.title,
+                    song.artists.joinToString { it.name },
+                    song.thumbnail,
+                    formatTime((song.duration ?: 0) * 1000L),
+                    id = song.id,
+                    index = "${index + 1}",
+                    track = song.toTrack(),
+                    model = model,
+                ) {
                     model.playSongs(risingSongs, index)
                 }
             }
@@ -1324,6 +1397,8 @@ private fun GenreDetail(model: AppModel) {
                 formatTime((song.duration ?: 0) * 1000L),
                 id = song.id,
                 index = "${index + 1}",
+                track = song.toTrack(),
+                model = model,
             ) { model.playSongs(model.categorySongs, index) }
         }
         if (model.categoryAlbums.isNotEmpty()) {
@@ -1399,6 +1474,8 @@ private fun AlbumScreen(model: AppModel) {
                 song.thumbnail,
                 formatTime((song.duration ?: 0) * 1000L),
                 index = "${index + 1}",
+                track = song.toTrack(),
+                model = model,
             ) {
                 page?.let { model.playSongs(it.songs, index) }
             }
@@ -1429,7 +1506,13 @@ private fun ArtistScreen(model: AppModel) {
                 if (songs.isNotEmpty()) {
                     Column {
                         songs.forEachIndexed { index, song ->
-                            SongRow(song.title, song.artists.joinToString { it.name }, song.thumbnail) {
+                            SongRow(
+                                song.title,
+                                song.artists.joinToString { it.name },
+                                song.thumbnail,
+                                track = song.toTrack(),
+                                model = model,
+                            ) {
                                 model.playSongs(songs, index)
                             }
                         }
@@ -1468,6 +1551,8 @@ private fun PlaylistScreen(model: AppModel) {
                 song.thumbnail,
                 formatTime((song.duration ?: 0) * 1000L),
                 index = "${index + 1}",
+                track = song.toTrack(),
+                model = model,
             ) {
                 page?.let { model.playSongs(it.songs, index) }
             }
@@ -1696,13 +1781,18 @@ private fun SongRow(
     trailing: String? = null,
     id: String? = null,
     index: String? = null,
+    track: Track? = null,
+    model: AppModel? = null,
     onClick: () -> Unit,
 ) {
+    val queueModel = model
+    val queueTrack = track
     val palette = LocalPalette.current
     val playing = id != null && id == LocalPlayingId.current
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
     val pressed by interaction.collectIsPressedAsState()
+    var menu by remember { mutableStateOf(false) }
     val background by animateColorAsState(
         when {
             playing -> Color.White.copy(alpha = 0.07f)
@@ -1715,34 +1805,117 @@ private fun SongRow(
     )
     val shift by animateDpAsState(if (hovered) 6.dp else 0.dp, Glide, label = "shift")
     val rail by animateDpAsState(if (playing) 28.dp else 0.dp, Glide, label = "rail")
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .offset(x = shift)
-            .clip(RoundedCornerShape(palette.corner))
-            .background(background)
-            .clickable(interaction, ripple(color = palette.accent), onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (playing) {
-            Box(Modifier.padding(end = 8.dp).width(3.dp).height(rail).clip(RoundedCornerShape(2.dp)).background(palette.accent))
-        } else if (index != null) {
-            Text(index, color = Muted, modifier = Modifier.width(28.dp), textAlign = TextAlign.Center)
+    Box(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .offset(x = shift)
+                .clip(RoundedCornerShape(palette.corner))
+                .background(background)
+                .then(
+                    if (queueModel != null && queueTrack != null) {
+                        Modifier.onPointerEvent(PointerEventType.Press) { event ->
+                            if (event.button == PointerButton.Secondary) menu = true
+                        }
+                    } else {
+                        Modifier
+                    },
+                )
+                .clickable(interaction, ripple(color = palette.accent), onClick = onClick)
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (playing) {
+                Box(Modifier.padding(end = 8.dp).width(3.dp).height(rail).clip(RoundedCornerShape(2.dp)).background(palette.accent))
+            } else if (index != null) {
+                Text(index, color = Muted, modifier = Modifier.width(28.dp), textAlign = TextAlign.Center)
+            }
+            Cover(thumbnail, Modifier.size(44.dp))
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium, color = if (playing) palette.accent else Color.White)
+                Text(subtitle, color = Color(0xFFC8C8D0), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
+            }
+            if (playing) {
+                Icon(Icons.Default.VolumeUp, contentDescription = "Çalıyor", tint = palette.accent, modifier = Modifier.padding(end = 8.dp).size(16.dp))
+            }
+            AnimatedVisibility(hovered && !playing && queueTrack == null) {
+                Icon(Icons.Default.PlayArrow, contentDescription = null, tint = palette.accent)
+            }
+            if (queueModel != null && queueTrack != null) {
+                CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
+                    IconButton(onClick = { menu = true }, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "Sıra seçenekleri", tint = Muted, modifier = Modifier.size(18.dp))
+                    }
+                }
+            }
+            trailing?.let { Text(it, color = Muted, modifier = Modifier.padding(start = 8.dp)) }
         }
-        Cover(thumbnail, Modifier.size(44.dp))
-        Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) {
-            Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium, color = if (playing) palette.accent else Color.White)
-            Text(subtitle, color = Color(0xFFC8C8D0), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
+        if (queueModel != null && queueTrack != null) {
+            QueueAddMenu(
+                expanded = menu,
+                onDismiss = { menu = false },
+                onPlayNext = { queueModel.player.playNext(listOf(queueTrack)) },
+                onAddToEnd = { queueModel.player.addToQueue(listOf(queueTrack)) },
+            )
         }
-        if (playing) {
-            Icon(Icons.Default.VolumeUp, contentDescription = "Çalıyor", tint = palette.accent, modifier = Modifier.padding(end = 8.dp).size(16.dp))
-        }
-        AnimatedVisibility(hovered && !playing) {
-            Icon(Icons.Default.PlayArrow, contentDescription = null, tint = palette.accent)
-        }
-        trailing?.let { Text(it, color = Muted, modifier = Modifier.padding(start = 8.dp)) }
+    }
+}
+
+@Composable
+private fun QueueAddMenu(
+    expanded: Boolean,
+    onDismiss: () -> Unit,
+    onPlayNext: () -> Unit,
+    onAddToEnd: () -> Unit,
+    playNextEnabled: Boolean = true,
+    addToEndEnabled: Boolean = true,
+) {
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        DropdownMenuItem(
+            text = { Text("Sonraki olarak çal") },
+            enabled = playNextEnabled,
+            onClick = {
+                onDismiss()
+                onPlayNext()
+            },
+        )
+        DropdownMenuItem(
+            text = { Text("Sıranın sonuna ekle") },
+            enabled = addToEndEnabled,
+            onClick = {
+                onDismiss()
+                onAddToEnd()
+            },
+        )
+    }
+}
+
+@Composable
+private fun QueueMenuTarget(
+    model: AppModel?,
+    track: Track?,
+    content: @Composable () -> Unit,
+) {
+    val queueModel = model
+    val queueTrack = track
+    if (queueModel == null || queueTrack == null) {
+        content()
+        return
+    }
+    var open by remember { mutableStateOf(false) }
+    Box {
+        Box(
+            Modifier.onPointerEvent(PointerEventType.Press) { event ->
+                if (event.button == PointerButton.Secondary) open = true
+            },
+        ) { content() }
+        QueueAddMenu(
+            expanded = open,
+            onDismiss = { open = false },
+            onPlayNext = { queueModel.player.playNext(listOf(queueTrack)) },
+            onAddToEnd = { queueModel.player.addToQueue(listOf(queueTrack)) },
+        )
     }
 }
 
@@ -1778,22 +1951,120 @@ private fun SoftIcon(
 
 @Composable
 private fun QueuePanel(model: AppModel, modifier: Modifier) {
+    val player = model.player
     Surface(modifier, color = Panel) {
-        LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            item { Text("Sıradaki", fontWeight = FontWeight.SemiBold, color = Color.White) }
-            itemsIndexed(model.player.queue, key = { index, track -> track.id + index }) { index, track ->
-                val playing = index == model.player.index
-                Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { model.player.jumpTo(index) }.padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Cover(track.thumbnail, Modifier.size(36.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(track.title, color = if (playing) Accent else Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(track.artists, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, top = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Sıradaki", fontWeight = FontWeight.SemiBold, color = Color.White)
+                    Text(
+                        if (player.queue.isEmpty()) "Sıra boş" else "${player.queue.size} şarkı",
+                        color = Muted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                TextButton(onClick = player::clearQueue, enabled = player.queue.isNotEmpty()) {
+                    Text("Sırayı temizle")
+                }
+            }
+            LazyColumn(
+                Modifier.weight(1f).fillMaxWidth(),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                if (player.queue.isEmpty()) {
+                    item {
+                        Text(
+                            "Şarkı satırındaki menüden sıraya ekleyebilirsin.",
+                            color = Muted,
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
+                        )
                     }
                 }
+                itemsIndexed(player.queue, key = { _, entry -> entry.key }) { index, entry ->
+                    QueueRow(player, index, entry)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QueueRow(player: PlaybackController, index: Int, entry: QueueEntry) {
+    val playing = index == player.index
+    var menu by remember { mutableStateOf(false) }
+    val last = player.queue.lastIndex
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .clickable { player.jumpTo(index) }
+            .padding(start = 4.dp, top = 4.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Cover(entry.track.thumbnail, Modifier.size(36.dp))
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                entry.track.title,
+                color = if (playing) Accent else Color.White,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                entry.track.artists,
+                color = Muted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
+            IconButton(
+                onClick = { if (index > 0) player.moveUp(entry.key) },
+                modifier = Modifier.size(28.dp),
+            ) {
+                Icon(
+                    Icons.Default.KeyboardArrowUp,
+                    contentDescription = "Yukarı taşı",
+                    tint = if (index > 0) Color.White else Muted,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+            IconButton(
+                onClick = { if (index < last) player.moveDown(entry.key) },
+                modifier = Modifier.size(28.dp),
+            ) {
+                Icon(
+                    Icons.Default.KeyboardArrowDown,
+                    contentDescription = "Aşağı taşı",
+                    tint = if (index < last) Color.White else Muted,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+            Box {
+                IconButton(onClick = { menu = true }, modifier = Modifier.size(28.dp)) {
+                    Icon(
+                        Icons.Default.MoreVert,
+                        contentDescription = "Sıra seçenekleri",
+                        tint = Color.White,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+                QueueAddMenu(
+                    expanded = menu,
+                    onDismiss = { menu = false },
+                    onPlayNext = { player.moveToPlayNext(entry.key) },
+                    onAddToEnd = { player.moveToEnd(entry.key) },
+                    playNextEnabled = !playing && index != player.index + 1,
+                    addToEndEnabled = index != last,
+                )
+            }
+            IconButton(onClick = { player.removeFromQueue(entry.key) }, modifier = Modifier.size(28.dp)) {
+                Icon(Icons.Default.Close, contentDescription = "Sıradan çıkar", tint = Color.White, modifier = Modifier.size(16.dp))
             }
         }
     }
