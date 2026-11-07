@@ -28,13 +28,17 @@ Koyu bir kabuk: solda gezinme, ortada içerik, altta oynatıcı. Oynatıcıda ka
 
 Uygulama açıldıktan kısa süre sonra ve ardından yaklaşık üç saatte bir [GitHub Releases](https://github.com/sylorx/Metrolist-Windows/releases) kontrol edilir. Yeni sürüm varsa pencerenin altında **Güncelle** çıkar. Ayarlar’da **Güncellemeleri kontrol et** aynı işi elle yapar.
 
-Güncelleme, yayındaki `Metrolist` adlı `.exe` kurulum dosyasını indirir, kurucuyu açar ve programı kapatır. Yayında böyle bir dosya yoksa uygulama güncel kabul edilir.
+Güncelleme, yayındaki `Metrolist` adlı `.exe` kurulum dosyasını ve aynı yayındaki `<dosya adı>.sha256` özetini indirir. Özet, dosyanın SHA-256 değeriyle aynı değilse, bozuksa veya yayında yoksa indirilen dosya silinir ve kurucu açılmaz. Özet tutarsa kurucu açılır ve program kapanır. Yayında böyle bir kurulum dosyası yoksa uygulama güncel kabul edilir.
 
 Yeni sürüm yayınlamak için:
 
 1. `desktop/build.gradle.kts` içindeki `packageVersion` ile `AppVersion.NAME` aynı sayı olsun.
 2. `./gradlew :desktop:packageExe` ile kurucuyu üret.
-3. GitHub’da `v1.2.0` gibi bir sürüm aç ve `Metrolist-….exe` dosyasını ekle.
+3. GitHub’da `v1.2.0` gibi bir sürüm aç. `Metrolist-….exe` dosyasının yanına, adı tam olarak `<kurulum dosyası>.sha256` olan bir özet ekle. Dosya UTF-8 metindir ve tek kayıttır: 64 onaltılık karakter (büyük veya küçük harf), ardından iki boşluk ve kurulum dosyasının tam adı. Sondaki satır sonu kabul edilir. `sha256sum` bunu yazar. Yalnızca 64 karakterlik özet de kabul edilir. Özet yoksa veya dosya adı kayıtta farklıysa uygulama kurucuyu açmaz.
+
+```bash
+sha256sum Metrolist-1.2.0.exe > Metrolist-1.2.0.exe.sha256
+```
 
 ## Derlemek
 

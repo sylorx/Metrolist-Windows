@@ -7,6 +7,14 @@ updates:
     open-pull-requests-limit: 5
     reviewers:
       - sylorx
+    target-branch: develop
+    groups:
+      gradle-minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
 
   - package-ecosystem: github-actions
     directory: /
@@ -15,3 +23,11 @@ updates:
     open-pull-requests-limit: 5
     reviewers:
       - sylorx
+    target-branch: develop
+    groups:
+      github-actions-minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
