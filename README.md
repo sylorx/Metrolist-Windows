@@ -59,3 +59,7 @@ Kurucu: `desktop\build\compose\binaries\main\exe\Metrolist-1.0.0.exe`
 ## Veriler
 
 Ayar, geçmiş ve kapak önbelleği `%LOCALAPPDATA%\Metrolist` içindedir. Çerez düz metin durur; o klasörü paylaşmayın.
+
+## Lisans
+
+Bu proje [GPL-3.0](LICENSE) ile lisanslıdır. [MetrolistGroup/Metrolist](https://github.com/MetrolistGroup/Metrolist) deposundan türetilmiştir.
