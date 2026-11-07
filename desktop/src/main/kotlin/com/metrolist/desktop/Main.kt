@@ -11,7 +11,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -38,7 +40,9 @@ import okhttp3.OkHttpClient
 import okio.Path.Companion.toOkioPath
 import com.metrolist.innertube.YouTube
 import com.metrolist.innertube.models.YouTubeLocale
+import kotlinx.coroutines.cancel
 import timber.log.Timber
+import java.awt.Frame
 
 fun main() {
     Timber.plant(object : Timber.Tree() {
@@ -49,6 +53,12 @@ fun main() {
     YouTube.locale = YouTubeLocale(gl = "TR", hl = "tr")
     application {
         val model = androidx.compose.runtime.remember { AppModel() }
+        val bridge = remember { TrayBridge() }
+        val exitHandle = remember { ExitHandle() }
+        val windowActions = remember { WindowActions() }
+        var tray by remember { mutableStateOf<DesktopTray?>(null) }
+        var windowVisible by remember { mutableStateOf(true) }
+        var exiting by remember { mutableStateOf(false) }
         val images = androidx.compose.runtime.remember {
             OkHttpClient.Builder().addInterceptor { chain ->
                 chain.proceed(
@@ -72,9 +82,74 @@ fun main() {
                 .build()
         }
         var showSplash by remember { mutableStateOf(true) }
+        val track = model.player.current
+        val playing = model.player.isPlaying
+        val menuState = TrayMenuState(
+            windowVisible = windowVisible,
+            playing = playing,
+            hasTrack = track != null,
+            tooltip = trayTooltip(track?.title, track?.artists),
+        )
+        SideEffect {
+            exitHandle.stopPlaybackAction = { model.player.stop() }
+            exitHandle.releasePlayerAction = { model.player.release() }
+            exitHandle.cancelWorkAction = { model.scope.cancel() }
+            exitHandle.removeTrayAction = { tray?.uninstall() }
+            exitHandle.exitAction = { exitApplication() }
+            bridge.onRestore = {
+                windowVisible = true
+                windowActions.bringToFront()
+            }
+            bridge.onToggleWindow = {
+                if (windowVisible) {
+                    windowVisible = false
+                } else {
+                    windowVisible = true
+                    windowActions.bringToFront()
+                }
+            }
+            bridge.onTogglePlayback = { model.player.toggle() }
+            bridge.onPrevious = { model.player.previous() }
+            bridge.onNext = { model.player.next() }
+            bridge.onExit = exit@{
+                if (exiting) return@exit
+                exiting = true
+                try {
+                    exitHandle.shutdown.run()
+                } catch (error: Throwable) {
+                    exiting = false
+                    windowVisible = true
+                    windowActions.bringToFront()
+                    Timber.e(error, "Çıkış tamamlanamadı")
+                }
+            }
+            bridge.onSnapshot = { menuState }
+            tray?.update(menuState)
+        }
+        LaunchedEffect(showSplash, model.minimizeToTray) {
+            if (showSplash || !model.minimizeToTray) {
+                if (!model.minimizeToTray) {
+                    tray?.uninstall()
+                    tray = null
+                    if (!windowVisible) windowVisible = true
+                }
+                return@LaunchedEffect
+            }
+            if (tray?.isInstalled != true) {
+                tray?.uninstall()
+                tray = DesktopTray.tryInstall(loadTrayImage(), bridge)
+            }
+        }
+        LaunchedEffect(windowVisible, tray, exiting) {
+            if (!exiting && !windowVisible && tray?.isInstalled != true) windowVisible = true
+        }
+        DisposableEffect(tray) {
+            val installed = tray
+            onDispose { installed?.uninstall() }
+        }
         if (showSplash) {
             Window(
-                onCloseRequest = ::exitApplication,
+                onCloseRequest = { bridge.onExit() },
                 title = "Metrolist",
                 transparent = true,
                 undecorated = true,
@@ -91,18 +166,80 @@ fun main() {
         } else {
             Window(
                 onCloseRequest = {
-                    model.player.stop()
-                    exitApplication()
+                    when (
+                        decideWindowClose(
+                            minimizeToTray = model.minimizeToTray,
+                            platformTraySupported = systemTraySupported(),
+                            trayInstalled = tray?.isInstalled == true,
+                        )
+                    ) {
+                        CloseAction.MinimizeToTray -> windowVisible = false
+                        CloseAction.Exit -> bridge.onExit()
+                    }
                 },
+                visible = windowVisible,
                 title = "Metrolist",
                 state = rememberWindowState(width = 1280.dp, height = 820.dp),
             ) {
+                val frame = window
+                windowActions.bringToFront = {
+                    runCatching {
+                        if ((frame.extendedState and Frame.ICONIFIED) != 0) {
+                            frame.extendedState = frame.extendedState and Frame.ICONIFIED.inv()
+                        }
+                        frame.isVisible = true
+                        frame.toFront()
+                        frame.requestFocus()
+                    }
+                }
+                LaunchedEffect(windowVisible) {
+                    if (windowVisible) windowActions.bringToFront()
+                }
                 MetrolistTheme(model.look) {
                     MetrolistApp(model)
                 }
             }
         }
     }
+}
+
+private class ExitHandle {
+    var stopPlaybackAction: () -> Unit = {}
+    var releasePlayerAction: () -> Unit = {}
+    var cancelWorkAction: () -> Unit = {}
+    var removeTrayAction: () -> Unit = {}
+    var exitAction: () -> Unit = {}
+    val shutdown = PlayerShutdown(object : PlayerResources {
+        override fun stopPlayback() = stopPlaybackAction()
+        override fun releasePlayer() = releasePlayerAction()
+        override fun cancelWork() = cancelWorkAction()
+        override fun removeTray() = removeTrayAction()
+        override fun exit() = exitAction()
+    })
+}
+
+private class TrayBridge : TrayActions {
+    var onRestore: () -> Unit = {}
+    var onToggleWindow: () -> Unit = {}
+    var onTogglePlayback: () -> Unit = {}
+    var onPrevious: () -> Unit = {}
+    var onNext: () -> Unit = {}
+    var onExit: () -> Unit = {}
+    var onSnapshot: () -> TrayMenuState = {
+        TrayMenuState(windowVisible = true, playing = false, hasTrack = false, tooltip = "Metrolist")
+    }
+
+    override fun restoreWindow() = onRestore()
+    override fun toggleWindow() = onToggleWindow()
+    override fun togglePlayback() = onTogglePlayback()
+    override fun previous() = onPrevious()
+    override fun next() = onNext()
+    override fun exit() = onExit()
+    override fun snapshot() = onSnapshot()
+}
+
+private class WindowActions {
+    var bringToFront: () -> Unit = {}
 }
 
 @Composable

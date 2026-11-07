@@ -70,6 +70,7 @@ data class Settings(
     val surface: String = "ink",
     val corners: String = "soft",
     val cards: String = "normal",
+    val minimizeToTray: Boolean = false,
 )
 
 @Serializable
