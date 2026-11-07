@@ -25,6 +25,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -84,12 +85,15 @@ class AppModel {
     var cookieDraft by mutableStateOf(store.settings.cookie)
     internal var look by mutableStateOf(Look.from(store.settings))
     var quality by mutableStateOf(store.settings.quality)
+    var minimizeToTray by mutableStateOf(store.settings.minimizeToTray)
+        private set
     var playlistsForAdd by mutableStateOf<List<PlaylistItem>>(emptyList())
     var showAdd by mutableStateOf(false)
     var showCreate by mutableStateOf(false)
     var newPlaylistTitle by mutableStateOf("")
     private var loadGeneration by mutableIntStateOf(0)
     private var suggestJob: Job? = null
+    private var openedHome = false
 
     val current: Dest get() = stack.last()
 
@@ -97,6 +101,18 @@ class AppModel {
         applyCookie(store.settings.cookie)
         updates.start()
         startLiveFeed()
+        scope.launch {
+            while (isActive) {
+                delay(300)
+                player.poll()
+            }
+        }
+    }
+
+    fun openInitialHome() {
+        if (openedHome) return
+        openedHome = true
+        openRail(Dest.Home)
     }
 
     fun openRail(dest: Dest) {
@@ -402,6 +418,11 @@ class AppModel {
     fun saveQuality(quality: String) {
         this.quality = quality
         store.saveSettings(store.settings.copy(quality = quality))
+    }
+
+    fun saveMinimizeToTray(enabled: Boolean) {
+        minimizeToTray = enabled
+        store.saveSettings(store.settings.copy(minimizeToTray = enabled))
     }
 
     internal fun saveLook(

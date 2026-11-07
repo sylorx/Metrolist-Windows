@@ -89,6 +89,19 @@ class FfmpegPlayer(
         if (worker != null && worker != Thread.currentThread()) worker.join(1200)
     }
 
+    fun release() {
+        stop()
+        val audio = synchronized(gate) {
+            val current = line
+            line = null
+            current
+        }
+        if (audio != null) {
+            runCatching { audio.stop() }
+            runCatching { audio.close() }
+        }
+    }
+
     private fun waitIfPaused(gen: Int) {
         synchronized(pauseLock) {
             while (paused && gen == generation) pauseLock.wait(200)

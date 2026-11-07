@@ -156,6 +156,16 @@ class PlaybackController(
         isPlaying = false
     }
 
+    fun release() {
+        radioJob?.cancel()
+        radioJob = null
+        playGeneration.incrementAndGet()
+        activeGeneration = -1
+        isPlaying = false
+        busy = false
+        ffmpeg.release()
+    }
+
     private fun move(delta: Int) {
         if (queue.isEmpty()) return
         if (delta > 0 && repeat == RepeatMode.One) {

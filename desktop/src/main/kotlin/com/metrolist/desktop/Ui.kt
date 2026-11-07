@@ -87,6 +87,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
@@ -171,11 +172,7 @@ internal fun MetrolistTheme(look: Look, content: @Composable () -> Unit) {
 fun MetrolistApp(model: AppModel) {
     val player = model.player
     LaunchedEffect(Unit) {
-        model.openRail(Dest.Home)
-        while (true) {
-            kotlinx.coroutines.delay(300)
-            model.player.poll()
-        }
+        model.openInitialHome()
     }
     LaunchedEffect(model.status) {
         val message = model.status ?: return@LaunchedEffect
@@ -1653,6 +1650,33 @@ private fun AudioSettings(model: AppModel) {
 
 @Composable
 private fun SystemSettings(model: AppModel) {
+    StudioCard("Pencere") {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Kapatınca tepsiye küçült", color = Color.White, fontWeight = FontWeight.Medium)
+                Text(
+                    "Açıkken pencere kapanınca çalma sürer. Tepsiden Çıkış uygulamayı kapatır.",
+                    color = Muted,
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Switch(
+                checked = model.minimizeToTray,
+                onCheckedChange = model::saveMinimizeToTray,
+            )
+        }
+        if (!systemTraySupported()) {
+            Text(
+                "Bu oturumda sistem tepsisi yok. Pencere kapanınca uygulama kapanır.",
+                color = Muted,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
     StudioCard("Güncelleme") {
         Text("Yüklü sürüm ${AppVersion.NAME}", color = Color.White, fontWeight = FontWeight.Medium)
         Text(model.updates.message, color = Muted)
