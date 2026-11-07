@@ -53,6 +53,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.MusicNote
@@ -121,6 +122,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -1888,11 +1890,13 @@ private fun SeekBar(positionMs: Long, durationMs: Long, onSeek: (Long) -> Unit) 
 private fun PlayerBar(model: AppModel) {
     val player = model.player
     val track = player.current
+    var sleepOpen by remember { mutableStateOf(false) }
     val known = when {
         player.durationMs > 1_000 -> player.durationMs
         (track?.durationMs ?: 0L) > 1_000 -> track?.durationMs ?: 0L
         else -> 0L
     }
+    if (sleepOpen) SleepTimerDialog(player) { sleepOpen = false }
     Surface(color = Panel, shadowElevation = 18.dp, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
             if (player.busy) LinearProgressIndicator(Modifier.fillMaxWidth(), color = Accent)
@@ -1914,6 +1918,9 @@ private fun PlayerBar(model: AppModel) {
                     }
                 }
                 Column(Modifier.width(480.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    sleepStatus(player, known)?.let { status ->
+                        Text(status, color = Accent, style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                    }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         SoftIcon(onClick = player::toggleShuffle) {
                             Icon(Icons.Default.Shuffle, contentDescription = "Karıştır", tint = if (player.shuffle) Accent else Muted)
@@ -1948,6 +1955,14 @@ private fun PlayerBar(model: AppModel) {
                     }
                 }
                 Row(Modifier.weight(1f), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                    val sleepOn = player.sleepRemainingMs != null || player.sleepPauseAtEndOfSong
+                    SoftIcon(onClick = { sleepOpen = true }) {
+                        Icon(
+                            Icons.Default.Bedtime,
+                            contentDescription = "Uyku zamanlayıcısı",
+                            tint = if (sleepOn) Accent else Muted,
+                        )
+                    }
                     SoftIcon(onClick = model::likeCurrent, enabled = track != null) {
                         Icon(
                             Icons.Default.Favorite,
@@ -1974,6 +1989,91 @@ private fun PlayerBar(model: AppModel) {
             }
         }
     }
+}
+
+private const val MAX_SLEEP_MINUTES = 24 * 60
+
+private fun sleepMinutes(text: String): Int? =
+    text.trim().toIntOrNull()?.takeIf { it in 1..MAX_SLEEP_MINUTES }
+
+private fun sleepStatus(player: PlaybackController, knownDurationMs: Long): String? {
+    player.sleepRemainingMs?.let { return "Uyku ${formatTime(it)}" }
+    if (!player.sleepPauseAtEndOfSong) return null
+    if (knownDurationMs <= 0L) return "Şarkı bitince duraklat"
+    val songLeft = (knownDurationMs - player.positionMs).coerceAtLeast(0L)
+    return "Şarkı bitince · ${formatTime(songLeft)}"
+}
+
+@Composable
+private fun SleepTimerDialog(player: PlaybackController, onDismiss: () -> Unit) {
+    var custom by remember { mutableStateOf("") }
+    val minutes = sleepMinutes(custom)
+    val active = player.sleepRemainingMs != null || player.sleepPauseAtEndOfSong
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Uyku zamanlayıcısı") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                val remaining = player.sleepRemainingMs
+                when {
+                    remaining != null -> Text("Kalan süre: ${formatTime(remaining)}", color = Accent)
+                    player.sleepPauseAtEndOfSong -> Text("Bu şarkı bitince duraklatılacak", color = Accent)
+                }
+                listOf(15, 30, 60).forEach { preset ->
+                    TextButton(
+                        onClick = {
+                            player.startSleep(preset)
+                            onDismiss()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("$preset dakika") }
+                }
+                OutlinedTextField(
+                    value = custom,
+                    onValueChange = { custom = it.filter(Char::isDigit).take(4) },
+                    placeholder = { Text("Dakika") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = {
+                        val chosen = sleepMinutes(custom)
+                        if (chosen != null) {
+                            player.startSleep(chosen)
+                            onDismiss()
+                        }
+                    }),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text("1–1440 dakika", color = Muted, style = MaterialTheme.typography.labelSmall)
+                Button(
+                    onClick = {
+                        if (minutes != null) {
+                            player.startSleep(minutes)
+                            onDismiss()
+                        }
+                    },
+                    enabled = minutes != null,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Özel süreyi başlat") }
+                TextButton(
+                    onClick = {
+                        player.pauseWhenSongEnds()
+                        onDismiss()
+                    },
+                    enabled = player.current != null,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Bu şarkı bitince duraklat") }
+            }
+        },
+        confirmButton = {
+            if (active) {
+                TextButton(onClick = {
+                    player.cancelSleep()
+                    onDismiss()
+                }) { Text("İptal") }
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Kapat") } },
+    )
 }
 
 @Composable

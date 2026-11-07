@@ -26,6 +26,11 @@ class PlaybackController(
         onEnded = { scope.launch { onTrackEnded() } },
         onError = { message -> scope.launch { onStreamFailed(message) } },
     )
+    private val sleepTimer = SleepTimer(
+        scope = scope,
+        clock = System::currentTimeMillis,
+        onPause = { pauseForSleep() },
+    )
 
     var queue by mutableStateOf<List<Track>>(emptyList())
     var index by mutableStateOf(-1)
@@ -52,6 +57,8 @@ class PlaybackController(
     private var radioFor: String? = null
 
     val current: Track? get() = queue.getOrNull(index)
+    val sleepRemainingMs: Long? get() = sleepTimer.remainingMs
+    val sleepPauseAtEndOfSong: Boolean get() = sleepTimer.pauseAtEndOfSong
 
     fun playAll(tracks: List<Track>, start: Int) {
         if (tracks.isEmpty()) return
@@ -127,6 +134,19 @@ class PlaybackController(
         }
     }
 
+    fun startSleep(minutes: Int) {
+        sleepTimer.start(minutes)
+    }
+
+    fun pauseWhenSongEnds() {
+        if (current == null) return
+        sleepTimer.pauseAtEndOfCurrentSong()
+    }
+
+    fun cancelSleep() {
+        sleepTimer.cancel()
+    }
+
     fun toggleQueue() {
         showQueue = !showQueue
     }
@@ -156,6 +176,11 @@ class PlaybackController(
         isPlaying = false
     }
 
+    private fun pauseForSleep() {
+        isPlaying = false
+        runCatching { ffmpeg.pause() }
+    }
+
     private fun move(delta: Int) {
         if (queue.isEmpty()) return
         if (delta > 0 && repeat == RepeatMode.One) {
@@ -180,6 +205,11 @@ class PlaybackController(
     }
 
     private fun onTrackEnded() {
+        val sleepPaused = sleepTimer.onTrackEnded()
+        // End-of-song sleep is decided before repeat and radio, so neither can start playback again.
+        if (sleepPaused && !playbackMayRestart(sleepPaused, repeat == RepeatMode.One, hasUpcoming(), radioJob?.isActive == true)) {
+            return
+        }
         if (repeat == RepeatMode.One) {
             startCurrent(0)
             return
