@@ -12,6 +12,7 @@ kotlin {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
     implementation(project(":innertube-jvm"))
     implementation(compose.desktop.currentOs)
     implementation(compose.material3)
@@ -21,6 +22,8 @@ dependencies {
     implementation("io.coil-kt.coil3:coil-compose:3.2.0")
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.2.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("net.java.dev.jna:jna:5.16.0")
+    implementation("net.java.dev.jna:jna-platform:5.16.0")
     implementation("org.bytedeco:javacv:1.5.11")
     implementation("org.bytedeco:ffmpeg:7.1-1.5.11:windows-x86_64")
 }
@@ -31,7 +34,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Exe)
             packageName = "Metrolist"
-            packageVersion = "1.0.0"
+            packageVersion = "1.1.1"
             description = "Metrolist for Windows"
             vendor = "Metrolist"
             windows {

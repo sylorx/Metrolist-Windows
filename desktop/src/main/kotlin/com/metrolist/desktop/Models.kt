@@ -28,6 +28,9 @@ sealed interface Dest {
     data object Settings : Dest
     data object Liked : Dest
     data object Shortcuts : Dest
+    data object LocalMusic : Dest
+    data object Insights : Dest
+    data class Smart(val rule: SmartRule) : Dest
     data class LocalList(val id: String) : Dest
     data class Album(val browseId: String) : Dest
     data class Artist(val browseId: String) : Dest
@@ -41,6 +44,8 @@ data class Track(
     val artists: String,
     val thumbnail: String?,
     val durationMs: Long,
+    val localPath: String? = null,
+    val album: String = "",
 )
 
 fun SongItem.toTrack() = Track(
@@ -49,6 +54,7 @@ fun SongItem.toTrack() = Track(
     artists = artists.joinToString { it.name }.ifBlank { "Bilinmeyen sanatçı" },
     thumbnail = thumbnail,
     durationMs = (duration ?: 0) * 1000L,
+    album = album?.name.orEmpty(),
 )
 
 fun EpisodeItem.toTrack() = asSongItem().toTrack()
@@ -60,7 +66,18 @@ fun YTItem.asTrack(): Track? = when (this) {
 }
 
 fun appDir(): File =
-    File(System.getenv("LOCALAPPDATA") ?: System.getProperty("user.home"), "Metrolist").also { it.mkdirs() }
+    (System.getProperty("metrolist.dataDir")?.let { File(it) }
+        ?: File(System.getenv("LOCALAPPDATA") ?: System.getProperty("user.home"), "Metrolist")).also { it.mkdirs() }
+
+@Serializable
+data class PlaybackMemory(
+    val tracks: List<SavedTrack> = emptyList(),
+    val index: Int = 0,
+    val positionMs: Long = 0,
+    val shuffle: Boolean = false,
+    val repeat: String = "Off",
+    val volume: Float = 1f,
+)
 
 @Serializable
 data class Settings(
@@ -70,6 +87,30 @@ data class Settings(
     val surface: String = "ink",
     val corners: String = "soft",
     val cards: String = "normal",
+    val widget: Boolean = true,
+    val widgetX: Int = -1,
+    val widgetY: Int = -1,
+    val toast: Boolean = true,
+    val toastOpacity: Float = 0.86f,
+    val toastScale: Float = 1f,
+    val toastSeconds: Int = 1,
+    val toastColor: String = "mint",
+    val toastX: Int = -1,
+    val toastY: Int = -1,
+    val bar: Boolean = true,
+    val barX: Int = -1,
+    val barScale: Float = 1f,
+    val caption: String = "ink",
+    val captionText: String = "app",
+    val captionStart: String = "#06281A",
+    val captionEnd: String = "#1ED760",
+    val captionCorner: String = "round",
+    val audio: AudioSettings = AudioSettings(),
+    val musicFolders: List<String> = emptyList(),
+    val autoplay: Boolean = true,
+    val checkUpdates: Boolean = true,
+    val downloadUpdates: Boolean = true,
+    val shortcuts: ShortcutBook = ShortcutBook(),
 )
 
 @Serializable
@@ -79,6 +120,9 @@ data class SavedTrack(
     val artists: String,
     val thumbnail: String? = null,
     val durationMs: Long = 0,
+    val localPath: String? = null,
+    val album: String = "",
+    val addedAt: Long = 0,
 )
 
 @Serializable
@@ -86,17 +130,20 @@ data class LocalPlaylist(
     val id: String,
     val title: String,
     val tracks: List<SavedTrack> = emptyList(),
+    val remoteId: String? = null,
+    val remoteBindings: Map<String, String> = emptyMap(),
 )
 
 @Serializable
 data class LocalLibrary(
     val liked: List<SavedTrack> = emptyList(),
     val playlists: List<LocalPlaylist> = emptyList(),
+    val localTracks: List<SavedTrack> = emptyList(),
 )
 
-fun Track.toSaved() = SavedTrack(id, title, artists, thumbnail, durationMs)
+fun Track.toSaved() = SavedTrack(id, title, artists, thumbnail, durationMs, localPath, album, System.currentTimeMillis())
 
-fun SavedTrack.toTrack() = Track(id, title, artists, thumbnail, durationMs)
+fun SavedTrack.toTrack() = Track(id, title, artists, thumbnail, durationMs, localPath, album)
 
 @Serializable
 data class HistoryEntry(
@@ -105,7 +152,12 @@ data class HistoryEntry(
     val artists: String,
     val thumbnail: String? = null,
     val playedAt: Long,
+    val localPath: String? = null,
+    val durationMs: Long = 0,
+    val album: String = "",
 )
+
+fun HistoryEntry.toTrack() = Track(id, title, artists, thumbnail, durationMs, localPath, album)
 
 fun coverUrl(raw: String?): String? {
     val trimmed = raw?.trim().orEmpty()
