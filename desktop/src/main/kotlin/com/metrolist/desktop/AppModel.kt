@@ -32,11 +32,13 @@ class AppModel {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     val store = Store()
     private val resolver = StreamResolver(appDir())
-    internal val updates = Updater(scope)
+    internal val updates = Updater(scope, store, notify = TaskbarMedia::announce)
     val player = PlaybackController(
         resolver = resolver,
         scope = scope,
         quality = { store.settings.quality },
+        onListening = { store.addSession(it) },
+        autoplay = { store.settings.autoplay },
         onPlayed = { track ->
             scope.launch(Dispatchers.IO) {
                 store.addHistory(track)
@@ -49,7 +51,7 @@ class AppModel {
     var stack by mutableStateOf(listOf<Dest>(Dest.Home))
     var loading by mutableStateOf(false)
     var error by mutableStateOf<String?>(null)
-    var status by mutableStateOf<String?>(null)
+    var status by mutableStateOf<String?>(store.warning)
     var home by mutableStateOf<HomePage?>(null)
     var homeContinuation by mutableStateOf<String?>(null)
     var homePaging by mutableStateOf(false)
@@ -84,19 +86,83 @@ class AppModel {
     var cookieDraft by mutableStateOf(store.settings.cookie)
     internal var look by mutableStateOf(Look.from(store.settings))
     var quality by mutableStateOf(store.settings.quality)
+    var widgetOn by mutableStateOf(store.settings.widget)
+    var widgetX by mutableStateOf(store.settings.widgetX)
+    var widgetY by mutableStateOf(store.settings.widgetY)
+    var toastOn by mutableStateOf(store.settings.toast)
+    var toastOpacity by mutableStateOf(store.settings.toastOpacity)
+    var toastScale by mutableStateOf(store.settings.toastScale)
+    var toastSeconds by mutableStateOf(store.settings.toastSeconds.coerceIn(1, 8))
+    var toastColor by mutableStateOf(store.settings.toastColor)
+    var toastX by mutableStateOf(store.settings.toastX)
+    var toastY by mutableStateOf(store.settings.toastY)
+    var toastShown by mutableStateOf(false)
+    var toastHold by mutableStateOf(false)
+    var barOn by mutableStateOf(store.settings.bar)
+    var barX by mutableStateOf(store.settings.barX)
+    var barScale by mutableStateOf(store.settings.barScale)
+    var caption by mutableStateOf(store.settings.caption)
+    var captionText by mutableStateOf(store.settings.captionText)
+    var captionStart by mutableStateOf(store.settings.captionStart)
+    var captionEnd by mutableStateOf(store.settings.captionEnd)
+    var captionCorner by mutableStateOf(store.settings.captionCorner)
+    var shortcuts by mutableStateOf(store.settings.shortcuts)
+    internal var shortcutCapture by mutableStateOf<ShortcutSlot?>(null)
     var playlistsForAdd by mutableStateOf<List<PlaylistItem>>(emptyList())
     var showAdd by mutableStateOf(false)
     var showCreate by mutableStateOf(false)
     var newPlaylistTitle by mutableStateOf("")
     private var loadGeneration by mutableIntStateOf(0)
     private var suggestJob: Job? = null
+    val libraryTools = LibraryTools(this)
 
     val current: Dest get() = stack.last()
 
     init {
         applyCookie(store.settings.cookie)
+        player.restore(store.playback)
+        player.configureAudio(store.settings.validated().audio)
         updates.start()
         startLiveFeed()
+        scope.launch(Dispatchers.IO) {
+            while (true) {
+                delay(5_000)
+                withContext(Dispatchers.Main) {
+                    player.flushListening()
+                    runCatching { store.savePlayback(player.memory()) }.onFailure { status = "Oynatma kaydı yazılamadı: ${it.message}" }
+                }
+            }
+        }
+    }
+
+    fun reloadPreferences() {
+        val settings = store.settings
+        look = Look.from(settings)
+        quality = settings.quality
+        widgetOn = settings.widget; widgetX = settings.widgetX; widgetY = settings.widgetY
+        toastOn = settings.toast; toastOpacity = settings.toastOpacity; toastScale = settings.toastScale
+        toastSeconds = settings.toastSeconds.coerceIn(1, 8); toastColor = settings.toastColor
+        toastX = settings.toastX; toastY = settings.toastY
+        barOn = settings.bar; barX = settings.barX; barScale = settings.barScale
+        caption = settings.caption; captionText = settings.captionText
+        captionStart = settings.captionStart; captionEnd = settings.captionEnd; captionCorner = settings.captionCorner
+        shortcuts = settings.shortcuts
+        player.configureAudio(settings.audio)
+        updates.reloadPreferences()
+    }
+
+    fun installUpdate() {
+        updates.install {
+            rememberPlayback()
+            player.stop()
+            kotlin.system.exitProcess(0)
+        }
+    }
+
+    fun rememberPlayback() {
+        player.poll()
+        player.flushListening()
+        store.savePlayback(player.memory())
     }
 
     fun openRail(dest: Dest) {
@@ -264,9 +330,7 @@ class AppModel {
         val added = store.toggleLike(track.toSaved())
         liked = store.library.liked
         status = if (added) "Beğenildi" else "Beğeni kaldırıldı"
-        if (added && store.settings.cookie.isNotBlank()) {
-            scope.launch(Dispatchers.IO) { runCatching { YouTube.likeVideo(track.id, true) } }
-        }
+        if (track.localPath == null) libraryTools.queueSync(SyncAction("like", value = track.id, enabled = added))
     }
 
     fun prepareAdd() {
@@ -287,7 +351,7 @@ class AppModel {
     fun addCurrentTo(playlistId: String) {
         val track = player.current ?: return
         if (playlistId.startsWith("local-")) {
-            store.addToPlaylist(playlistId, track.toSaved())
+            libraryTools.addTracks(playlistId, listOf(track.toSaved()))
             localPlaylists = store.library.playlists
             status = "Listeye eklendi"
             showAdd = false
@@ -306,14 +370,11 @@ class AppModel {
             status = "Liste adı yaz"
             return
         }
-        store.createPlaylist(title)
+        libraryTools.createPlaylist(title)
         localPlaylists = store.library.playlists
         newPlaylistTitle = ""
         showCreate = false
         status = "Liste oluşturuldu"
-        if (store.settings.cookie.isNotBlank()) {
-            scope.launch(Dispatchers.IO) { runCatching { YouTube.createPlaylist(title) } }
-        }
     }
 
     fun openLocal(id: String) {
@@ -404,6 +465,144 @@ class AppModel {
         store.saveSettings(store.settings.copy(quality = quality))
     }
 
+    fun setWidget(on: Boolean) {
+        widgetOn = on
+        saveChrome()
+    }
+
+    fun placeWidget(x: Int, y: Int) {
+        if (!onScreens(x, y)) return
+        widgetX = x
+        widgetY = y
+        saveChrome()
+    }
+
+    fun placeToast(x: Int, y: Int) {
+        if (!onScreens(x, y)) return
+        toastX = x
+        toastY = y
+        saveChrome()
+    }
+
+    fun setToast(on: Boolean) {
+        toastOn = on
+        if (!on) toastShown = false
+        saveChrome()
+    }
+
+    fun saveToastOpacity(value: Float) {
+        toastOpacity = value.coerceIn(0.35f, 1f)
+        saveChrome()
+    }
+
+    fun saveToastScale(value: Float) {
+        toastScale = value
+        saveChrome()
+    }
+
+    fun saveToastSeconds(seconds: Int) {
+        toastSeconds = seconds.coerceIn(1, 8)
+        saveChrome()
+    }
+
+    fun saveToastColor(id: String) {
+        toastColor = id
+        saveChrome()
+    }
+
+    fun setBar(on: Boolean) {
+        barOn = on
+        saveChrome()
+    }
+
+    fun placeBar(along: Int) {
+        if (along < 0) return
+        barX = along
+        saveChrome()
+    }
+
+    fun saveBarScale(value: Float) {
+        barScale = value
+        saveChrome()
+    }
+
+    fun saveCaption(id: String) {
+        caption = id
+        saveChrome()
+    }
+
+    fun saveCaptionText(id: String) {
+        captionText = id
+        saveChrome()
+    }
+
+    fun saveCaptionCorner(id: String) {
+        captionCorner = id
+        saveChrome()
+    }
+
+    internal fun setScrollVolume(on: Boolean) {
+        shortcuts = shortcuts.copy(scrollVolume = on)
+        saveShortcuts()
+    }
+
+    internal fun setShortcutEnabled(slot: ShortcutSlot, on: Boolean) {
+        shortcuts = shortcuts.setEnabled(slot, on)
+        saveShortcuts()
+    }
+
+    internal fun assignShortcut(slot: ShortcutSlot, key: String) {
+        shortcuts = shortcuts.assign(slot, key)
+        shortcutCapture = null
+        saveShortcuts()
+    }
+
+    internal fun clearShortcut(slot: ShortcutSlot) {
+        shortcuts = shortcuts.setKey(slot, "")
+        saveShortcuts()
+    }
+
+    internal fun resetShortcuts() {
+        shortcuts = ShortcutBook()
+        shortcutCapture = null
+        saveShortcuts()
+    }
+
+    private fun saveShortcuts() {
+        store.saveSettings(store.settings.copy(shortcuts = shortcuts))
+    }
+
+    fun saveCaptionStop(start: Boolean, hex: String) {
+        if (start) captionStart = hex else captionEnd = hex
+        caption = "custom"
+        saveChrome()
+    }
+
+    private fun saveChrome() {
+        store.saveSettings(
+            store.settings.copy(
+                widget = widgetOn,
+                widgetX = widgetX,
+                widgetY = widgetY,
+                toast = toastOn,
+                toastOpacity = toastOpacity,
+                toastScale = toastScale,
+                toastSeconds = toastSeconds,
+                toastColor = toastColor,
+                toastX = toastX,
+                toastY = toastY,
+                bar = barOn,
+                barX = barX,
+                barScale = barScale,
+                caption = caption,
+                captionText = captionText,
+                captionStart = captionStart,
+                captionEnd = captionEnd,
+                captionCorner = captionCorner,
+            ),
+        )
+    }
+
     internal fun saveLook(
         accent: String = look.accentId,
         surface: String = look.surfaceId,
@@ -447,7 +646,8 @@ class AppModel {
                 }
             }
             Dest.Liked -> liked = store.library.liked
-            Dest.Shortcuts -> Unit
+            Dest.Shortcuts, Dest.LocalMusic, Dest.Insights -> Unit
+            is Dest.Smart -> Unit
             is Dest.LocalList -> Unit
             is Dest.Album -> album = withContext(Dispatchers.IO) { YouTube.album(dest.browseId).getOrThrow() }
             is Dest.Artist -> artist = withContext(Dispatchers.IO) { YouTube.artist(dest.browseId).getOrThrow() }
@@ -471,6 +671,11 @@ class AppModel {
         val page = withContext(Dispatchers.IO) { YouTube.library(libraryTab.browseId).getOrThrow() }
         libraryItems = page.items
         libraryContinuation = page.continuation
+    }
+
+    private fun onScreens(x: Int, y: Int): Boolean {
+        val area = TaskbarMedia.desktopBounds()
+        return x in (area.x - 80)..(area.x + area.width - 40) && y in (area.y - 40)..(area.y + area.height - 24)
     }
 
     private suspend fun loadExplore() {

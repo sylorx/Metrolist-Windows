@@ -17,11 +17,12 @@ import com.metrolist.innertubex.extraction.generateClientPlaybackNonce
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.io.File
 import java.util.Properties
 import java.util.concurrent.ConcurrentHashMap
 
-class StreamResolver(dir: File) {
+class StreamResolver(dir: File) : PlaybackStreams {
     data class Stream(val url: String, val headers: Map<String, String>)
 
     private val configRepository = FilePlayerConfigRepository(dir)
@@ -39,15 +40,15 @@ class StreamResolver(dir: File) {
         bundle()
     }
 
-    fun forget(videoId: String, quality: String) {
+    override fun forget(videoId: String, quality: String) {
         cache.remove("$videoId|$quality")
     }
 
-    fun keep(videoId: String, quality: String, stream: Stream) {
+    override fun keep(videoId: String, quality: String, stream: Stream) {
         remember("$videoId|$quality", stream)
     }
 
-    suspend fun openers(videoId: String, quality: String): List<Stream> {
+    override suspend fun openers(videoId: String, quality: String): List<Stream> {
         val saved = cached("$videoId|$quality")
         val free = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             FreeStreams.resolveAll(videoId, quality)
@@ -55,7 +56,7 @@ class StreamResolver(dir: File) {
         return (listOfNotNull(saved) + free).distinctBy { it.url }
     }
 
-    suspend fun innertube(videoId: String, quality: String): Stream? {
+    override suspend fun innertube(videoId: String, quality: String): Stream? {
         val audioQuality = when (quality) {
             "HIGH" -> AudioQuality.HIGH
             "LOW" -> AudioQuality.LOW
@@ -74,7 +75,7 @@ class StreamResolver(dir: File) {
         return null
     }
 
-    suspend fun resolve(videoId: String, quality: String): Stream {
+    override suspend fun resolve(videoId: String, quality: String): Stream {
         val key = "$videoId|$quality"
         cached(key)?.let { return it }
         FreeStreams.resolve(videoId, quality)?.let { stream ->
@@ -129,13 +130,13 @@ class StreamResolver(dir: File) {
     }
 
     private fun remember(key: String, stream: Stream) {
-        cache[key] = CachedStream(stream, System.currentTimeMillis() + CACHE_MS)
+        cache[key] = CachedStream(stream, streamCacheDeadline(stream.url, System.currentTimeMillis()))
         if (cache.size > 48) cache.keys.firstOrNull()?.let { cache.remove(it) }
     }
 
     private fun cached(key: String): Stream? {
         val hit = cache[key] ?: return null
-        if (hit.untilMs < System.currentTimeMillis()) {
+        if (hit.untilMs <= System.currentTimeMillis()) {
             cache.remove(key, hit)
             return null
         }
@@ -143,10 +144,6 @@ class StreamResolver(dir: File) {
     }
 
     private class CachedStream(val stream: Stream, val untilMs: Long)
-
-    private companion object {
-        const val CACHE_MS = 2 * 60 * 60 * 1000L
-    }
 
     private suspend fun bundle(): Bundle {
         val transport = YouTube.extractionTransport()
@@ -219,4 +216,12 @@ private class FilePlayerConfigRepository(dir: File) : PlayerConfigRepository {
         const val CONFIG_URL =
             "https://raw.githubusercontent.com/ZemerTeam/zemer-cipher/master/library/src/main/assets/player_configs.json"
     }
+}
+
+/** Signed URLs may expire before the normal cache lifetime. Leave time to open them. */
+internal fun streamCacheDeadline(url: String, nowMs: Long): Long {
+    val normal = nowMs + 2 * 60 * 60 * 1000L
+    val expirySeconds = url.toHttpUrlOrNull()?.queryParameter("expire")?.toLongOrNull()
+        ?.takeIf { it in 1..(Long.MAX_VALUE / 1000) } ?: return normal
+    return minOf(normal, expirySeconds * 1000 - 60_000)
 }
