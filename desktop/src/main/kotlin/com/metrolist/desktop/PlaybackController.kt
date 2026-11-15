@@ -19,7 +19,9 @@ class PlaybackController(
     private val scope: CoroutineScope,
     quality: () -> String,
     private val onPlayed: (Track) -> Unit,
+    private val autoSkipped: (Track) -> Boolean = { false },
 ) {
+    private val radioIds = mutableSetOf<String>()
     private val qualityOf = quality
     private val playGeneration = AtomicInteger()
     private val ffmpeg = FfmpegPlayer(
@@ -55,6 +57,7 @@ class PlaybackController(
 
     fun playAll(tracks: List<Track>, start: Int) {
         if (tracks.isEmpty()) return
+        radioIds.clear()
         queue = tracks
         index = start.coerceIn(0, tracks.lastIndex)
         startCurrent(0)
@@ -62,10 +65,22 @@ class PlaybackController(
 
     fun playShuffled(tracks: List<Track>) {
         if (tracks.isEmpty()) return
+        radioIds.clear()
         shuffle = true
         queue = tracks.shuffled()
         index = 0
         startCurrent(0)
+    }
+
+    fun applyBlocks() {
+        val edit = queueAfterBlock(queue, index, radioIds, autoSkipped)
+        queue = edit.tracks
+        index = edit.index
+        radioIds.retainAll(edit.tracks.map { it.id }.toSet())
+        when {
+            edit.restart -> startCurrent(0)
+            edit.tracks.isEmpty() -> stop()
+        }
     }
 
     fun toggle() {
@@ -328,8 +343,11 @@ class PlaybackController(
             val extra = runCatching { withContext(Dispatchers.IO) { similarTracks(seed) } }.getOrDefault(emptyList())
             if (extra.isEmpty() || current == null) return@launch
             val known = queue.map { it.id }.toSet()
-            val fresh = extra.filter { it.id !in known }
-            if (fresh.isNotEmpty()) queue = queue + fresh
+            val fresh = radioAdditions(extra, known, autoSkipped)
+            if (fresh.isNotEmpty()) {
+                radioIds.addAll(fresh.map { it.id })
+                queue = queue + fresh
+            }
         }
     }
 

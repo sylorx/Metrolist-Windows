@@ -9,6 +9,7 @@ class Store {
     private val settingsFile = File(appDir(), "settings.json")
     private val historyFile = File(appDir(), "history.json")
     private val libraryFile = File(appDir(), "library.json")
+    private val blocksFile = File(appDir(), "blocks.json")
 
     var settings: Settings = read(settingsFile, Settings())
         private set
@@ -17,6 +18,9 @@ class Store {
         private set
 
     var library: LocalLibrary = read(libraryFile, LocalLibrary())
+        private set
+
+    var blocks: PlaybackBlocks = read(blocksFile, PlaybackBlocks())
         private set
 
     private val historyLock = Any()
@@ -58,6 +62,16 @@ class Store {
         library = library.copy(playlists = listOf(created) + library.playlists)
         writeLibrary()
         created
+    }
+
+    fun setSongBlocked(id: String, blocked: Boolean) {
+        blocks = withSongBlock(blocks, id, blocked)
+        blocksFile.writeText(json.encodeToString(blocks))
+    }
+
+    fun setArtistsBlocked(names: List<String>, blocked: Boolean) {
+        blocks = withArtistBlocks(blocks, names, blocked)
+        blocksFile.writeText(json.encodeToString(blocks))
     }
 
     fun addToPlaylist(playlistId: String, track: SavedTrack) = synchronized(libraryLock) {

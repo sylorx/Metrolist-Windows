@@ -70,6 +70,9 @@ data class Settings(
     val surface: String = "ink",
     val corners: String = "soft",
     val cards: String = "normal",
+    val discord: Boolean = false,
+    val discordAppId: String = "",
+    val privateListen: Boolean = false,
 )
 
 @Serializable

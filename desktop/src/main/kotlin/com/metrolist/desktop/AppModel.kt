@@ -33,6 +33,7 @@ class AppModel {
     val store = Store()
     private val resolver = StreamResolver(appDir())
     internal val updates = Updater(scope)
+    private val discord = DiscordSession(WindowsDiscordTransport())
     val player = PlaybackController(
         resolver = resolver,
         scope = scope,
@@ -43,7 +44,9 @@ class AppModel {
                 val snapshot = store.history
                 withContext(Dispatchers.Main) { history = snapshot }
             }
+            syncDiscord()
         },
+        autoSkipped = { track -> matchesBlock(track, store.blocks) },
     )
 
     var stack by mutableStateOf(listOf<Dest>(Dest.Home))
@@ -84,6 +87,10 @@ class AppModel {
     var cookieDraft by mutableStateOf(store.settings.cookie)
     internal var look by mutableStateOf(Look.from(store.settings))
     var quality by mutableStateOf(store.settings.quality)
+    var blocks by mutableStateOf(store.blocks)
+    var discordEnabled by mutableStateOf(store.settings.discord)
+    var discordAppId by mutableStateOf(store.settings.discordAppId)
+    var privateListen by mutableStateOf(store.settings.privateListen)
     var playlistsForAdd by mutableStateOf<List<PlaylistItem>>(emptyList())
     var showAdd by mutableStateOf(false)
     var showCreate by mutableStateOf(false)
@@ -402,6 +409,60 @@ class AppModel {
     fun saveQuality(quality: String) {
         this.quality = quality
         store.saveSettings(store.settings.copy(quality = quality))
+    }
+
+    fun saveDiscordEnabled(enabled: Boolean) {
+        discordEnabled = enabled
+        store.saveSettings(store.settings.copy(discord = enabled))
+        syncDiscord()
+    }
+
+    fun saveDiscordAppId(value: String) {
+        discordAppId = value
+        store.saveSettings(store.settings.copy(discordAppId = value.trim()))
+        syncDiscord()
+    }
+
+    fun savePrivateListen(enabled: Boolean) {
+        privateListen = enabled
+        store.saveSettings(store.settings.copy(privateListen = enabled))
+        syncDiscord()
+    }
+
+    fun blockCurrentSong() {
+        val track = player.current ?: return
+        val blocked = !blocks.songs.contains(track.id)
+        store.setSongBlocked(track.id, blocked)
+        blocks = store.blocks
+        if (blocked) player.applyBlocks()
+        status = if (blocked) "Bu şarkı artık radyoda çalmaz" else "Şarkı engeli kalktı"
+        syncDiscord()
+    }
+
+    fun blockCurrentArtists() {
+        val track = player.current ?: return
+        val names = artistNames(track.artists)
+        if (names.isEmpty()) {
+            status = "Sanatçı adı yok"
+            return
+        }
+        val blocked = names.any { artistKey(it) !in blocks.artists.map(::artistKey).toSet() }
+        store.setArtistsBlocked(names, blocked)
+        blocks = store.blocks
+        if (blocked) player.applyBlocks()
+        status = if (blocked) "Bu sanatçı artık radyoda çalmaz" else "Sanatçı engeli kalktı"
+    }
+
+    fun syncDiscord() {
+        val settings = store.settings
+        val track = player.current
+        val visible = settings.discord && !settings.privateListen && player.isPlaying
+        val positionMs = player.positionMs
+        val durationMs = player.durationMs.takeIf { it > 1_000 } ?: track?.durationMs ?: 0L
+        val appId = settings.discordAppId
+        scope.launch(Dispatchers.IO) {
+            discord.sync(appId, visible, track, positionMs, durationMs)
+        }
     }
 
     internal fun saveLook(

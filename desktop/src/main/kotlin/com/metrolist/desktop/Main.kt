@@ -89,14 +89,38 @@ fun main() {
                 BounceSplash(model.look.palette.accent) { showSplash = false }
             }
         } else {
+            var windowOpen by remember { mutableStateOf(true) }
+            var hideOnClose by remember { mutableStateOf(false) }
             Window(
                 onCloseRequest = {
-                    model.player.stop()
-                    exitApplication()
+                    if (hideOnClose) {
+                        windowOpen = false
+                    } else {
+                        model.player.stop()
+                        exitApplication()
+                    }
                 },
+                visible = windowOpen,
                 title = "Metrolist",
                 state = rememberWindowState(width = 1280.dp, height = 820.dp),
             ) {
+                LaunchedEffect(Unit) {
+                    hideOnClose = AppTray.install(
+                        onShow = { windowOpen = true },
+                        onExit = {
+                            AppTray.remove()
+                            model.player.stop()
+                            exitApplication()
+                        },
+                    )
+                }
+                LaunchedEffect(windowOpen) {
+                    if (windowOpen) {
+                        window.isMinimized = false
+                        window.toFront()
+                        window.requestFocus()
+                    }
+                }
                 MetrolistTheme(model.look) {
                     MetrolistApp(model)
                 }
