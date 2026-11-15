@@ -2,6 +2,7 @@ package com.metrolist.desktop
 
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
@@ -63,6 +64,63 @@ internal val cornerChoices = listOf(
     "soft" to "Yumuşak",
     "round" to "Yuvarlak",
 )
+
+internal data class CaptionGradient(val id: String, val colors: List<Color>)
+
+internal val captionGradients = listOf(
+    CaptionGradient("grad-mint", listOf(Color(0xFF06281A), Color(0xFF1ED760))),
+    CaptionGradient("grad-sunset", listOf(Color(0xFFFF4D6D), Color(0xFFF5A524))),
+    CaptionGradient("grad-ocean", listOf(Color(0xFF0C1220), Color(0xFF4CC9F0))),
+    CaptionGradient("grad-violet", listOf(Color(0xFF2A1848), Color(0xFFA78BFA))),
+    CaptionGradient("grad-coral", listOf(Color(0xFF3A1210), Color(0xFFFF7A59))),
+    CaptionGradient("grad-aurora", listOf(Color(0xFF1ED760), Color(0xFF4CC9F0))),
+)
+
+internal val captionPalette = listOf(
+    Color(0xFF0B0C0E),
+    Color(0xFF121212),
+    Color(0xFFFFFFFF),
+    Color(0xFF06281A),
+    Color(0xFF1ED760),
+    Color(0xFF7CDE6A),
+    Color(0xFFFF4D6D),
+    Color(0xFFF5A524),
+    Color(0xFFFF7A59),
+    Color(0xFF3A1210),
+    Color(0xFF0C1220),
+    Color(0xFF4CC9F0),
+    Color(0xFF2A1848),
+    Color(0xFFA78BFA),
+)
+
+internal fun colorHex(color: Color): String = "#%06X".format(color.toArgb() and 0xFFFFFF)
+
+internal fun hexColor(value: String): Color {
+    val rgb = value.trim().removePrefix("#").toLongOrNull(16) ?: return Color(0xFF0B0C0E)
+    return Color(0xFF000000 or rgb)
+}
+
+internal fun captionColors(id: String, accent: Color, start: String = "#06281A", end: String = "#1ED760"): List<Color> {
+    if (id == "custom") return listOf(hexColor(start), hexColor(end))
+    captionGradients.firstOrNull { it.id == id }?.let { return it.colors }
+    return listOf(captionColor(id, accent) ?: Color(0xFFF3F6F8))
+}
+
+internal fun captionInk(colors: List<Color>): Color {
+    val sample = colors.firstOrNull() ?: Color.White
+    val light = sample.red * 0.2126f + sample.green * 0.7152f + sample.blue * 0.0722f > 0.62f
+    return if (light) Color(0xFF121212) else Color.White
+}
+
+internal fun captionColor(id: String, accent: Color): Color? = when (id) {
+    "system" -> null
+    "white" -> Color(0xFFF3F6F8)
+    "black" -> Color(0xFF070708)
+    "accent" -> accent
+    else -> surfaceChoices.firstOrNull { it.id == id }?.ink
+        ?: accentChoices.firstOrNull { it.id == id }?.color
+        ?: Color(0xFF0B0C0E)
+}
 
 internal val cardChoices = listOf(
     "compact" to "Kompakt",
