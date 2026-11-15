@@ -55,6 +55,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Keyboard
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.History
@@ -75,6 +76,9 @@ import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Switch
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
@@ -175,6 +179,9 @@ fun MetrolistApp(model: AppModel) {
         while (true) {
             kotlinx.coroutines.delay(300)
             model.player.poll()
+            model.syncDiscord()
+            val playing = model.player.current
+            AppTray.hint(playing?.title.orEmpty(), playing?.artists.orEmpty())
         }
     }
     LaunchedEffect(model.status) {
@@ -1670,6 +1677,31 @@ private fun SystemSettings(model: AppModel) {
             }
         }
     }
+    StudioCard("Pencere") {
+        Text("Kapatmak müziği durdurmaz. Simge tepside kalır. Tepsiden Çık uygulamayı kapatır.", color = Muted)
+    }
+    StudioCard("Discord") {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Çalan şarkıyı Discord’da göster", color = Color.White, modifier = Modifier.weight(1f))
+            Switch(checked = model.discordEnabled, onCheckedChange = model::saveDiscordEnabled)
+        }
+        OutlinedTextField(
+            value = model.discordAppId,
+            onValueChange = model::saveDiscordAppId,
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("Uygulama kimliği") },
+            placeholder = { Text("Discord Developer Portal") },
+        )
+        Text("Kimlik bu bilgisayarda durur. Discord kapalıysa çalma sürer.", color = Muted, style = MaterialTheme.typography.bodySmall)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.weight(1f)) {
+                Text("Gizli dinle", color = Color.White)
+                Text("Açıkken Discord durumu kalkar.", color = Muted, style = MaterialTheme.typography.bodySmall)
+            }
+            Switch(checked = model.privateListen, onCheckedChange = model::savePrivateListen)
+        }
+    }
     StudioCard("Klavye") {
         Text("Boşluk oynatır. Ctrl ile parça ve ses değişir.", color = Muted)
         TextButton(onClick = { model.open(Dest.Shortcuts) }) { Text("Kısayolları aç") }
@@ -1954,6 +1986,32 @@ private fun PlayerBar(model: AppModel) {
                             contentDescription = "Beğen",
                             tint = if (track != null && model.liked.any { it.id == track.id }) Accent else Muted,
                         )
+                    }
+                    Box {
+                        var songMenu by remember { mutableStateOf(false) }
+                        val songBlocked = track != null && model.blocks.songs.contains(track.id)
+                        val artistBlocked = track != null && artistNames(track.artists).isNotEmpty() &&
+                            artistNames(track.artists).all { name -> model.blocks.artists.any { artistKey(it) == artistKey(name) } }
+                        SoftIcon(onClick = { songMenu = true }, enabled = track != null) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "Şarkı menüsü", tint = Muted)
+                        }
+                        DropdownMenu(expanded = songMenu, onDismissRequest = { songMenu = false }) {
+                            DropdownMenuItem(
+                                text = { Text(if (songBlocked) "Şarkı engelini kaldır" else "Bu şarkıyı çalma") },
+                                onClick = {
+                                    songMenu = false
+                                    model.blockCurrentSong()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(if (artistBlocked) "Sanatçı engelini kaldır" else "Bu sanatçıyı çalma") },
+                                onClick = {
+                                    songMenu = false
+                                    model.blockCurrentArtists()
+                                },
+                                enabled = track != null && artistNames(track.artists).isNotEmpty(),
+                            )
+                        }
                     }
                     SoftIcon(onClick = model::prepareAdd, enabled = track != null) { Icon(Icons.Default.PlaylistAdd, contentDescription = "Ekle") }
                     SoftIcon(onClick = player::toggleLyrics, enabled = track != null) { Icon(Icons.Default.GraphicEq, contentDescription = "Sözler") }
