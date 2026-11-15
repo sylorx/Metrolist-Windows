@@ -3,184 +3,199 @@ package com.metrolist.desktop
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import okhttp3.OkHttpClient
-import okhttp3.Request
+import kotlinx.coroutines.*
 import java.io.File
-import java.util.concurrent.TimeUnit
 
-internal class Updater(private val scope: CoroutineScope) {
+internal class Updater(
+    private val scope: CoroutineScope,
+    private val store: Store,
+    private val service: UpdateService = GitHubUpdateService(),
+    private val installer: UpdateInstaller = WindowsUpdateInstaller(),
+    private val directory: File = File(appDir(), "updates"),
+    private val currentVersion: String = AppVersion.NAME,
+    private val notify: (String, String) -> Unit = { _, _ -> },
+) {
     var checking by mutableStateOf(false)
+        private set
     var downloading by mutableStateOf(false)
+        private set
+    var installing by mutableStateOf(false)
+        private set
     var progress by mutableStateOf(0f)
+        private set
+    var receivedBytes by mutableStateOf(0L)
+        private set
+    var totalBytes by mutableStateOf(0L)
+        private set
     var latest by mutableStateOf<String?>(null)
+        private set
     var notes by mutableStateOf<String?>(null)
+        private set
     var message by mutableStateOf("Henüz kontrol edilmedi")
-    private var assetUrl: String? = null
+        private set
+    var ready by mutableStateOf(false)
+        private set
+    var automatic by mutableStateOf(store.settings.checkUpdates)
+        private set
+    var backgroundDownload by mutableStateOf(store.settings.downloadUpdates)
+        private set
+    var resultMessage by mutableStateOf(readResult())
+        private set
+    private var release: UpdateRelease? = null
+    private var packageFile: File? = null
     private var dismissed: String? = null
-
-    val pending: String?
-        get() {
-            val remote = latest ?: return null
-            if (remote == dismissed) return null
-            return remote.takeIf { newer(it, AppVersion.NAME) }
-        }
+    private var started = false
+    private var downloadJob: Job? = null
+    private var cancelRequested = false
+    val available: String? get() = latest?.takeIf { isNewerVersion(it, currentVersion) }
+    val pending: String? get() = available?.takeUnless { it == dismissed }
+    val canDownload: Boolean get() = release?.asset != null && available != null
 
     fun start() {
+        if (started) return
+        started = true
         scope.launch {
-            delay(4_000)
-            while (true) {
-                check()
-                delay(CHECK_EVERY_MS)
+            delay(4000)
+            while (isActive) {
+                if (automatic) check()
+                delay(3 * 60 * 60 * 1000L)
             }
         }
     }
-
+    fun changeAutomatic(enabled: Boolean) {
+        store.saveSettings(store.settings.copy(checkUpdates = enabled))
+        automatic = enabled
+        if (enabled) requestCheck()
+    }
+    fun changeBackgroundDownload(enabled: Boolean) {
+        store.saveSettings(store.settings.copy(downloadUpdates = enabled))
+        backgroundDownload = enabled
+        if (enabled && canDownload && !ready) download()
+    }
+    fun reloadPreferences() {
+        automatic = store.settings.checkUpdates; backgroundDownload = store.settings.downloadUpdates
+    }
     fun requestCheck() {
-        if (checking || downloading) return
-        scope.launch { check() }
-    }
-
-    fun dismiss() {
-        dismissed = latest
-    }
-
-    fun install(onExit: () -> Unit) {
-        val url = assetUrl ?: return
-        if (downloading) return
-        scope.launch {
-            downloading = true
-            progress = 0f
-            message = "Güncelleme indiriliyor"
-            val file = runCatching { withContext(Dispatchers.IO) { download(url) } }
-            downloading = false
-            file.onSuccess { installer ->
-                val started = runCatching {
-                    ProcessBuilder(installer.absolutePath)
-                        .directory(installer.parentFile)
-                        .start()
-                }
-                if (started.isSuccess) {
-                    message = "Kurulum açıldı"
-                    onExit()
-                } else {
-                    message = started.exceptionOrNull()?.message ?: "Kurulum başlatılamadı"
-                }
-            }.onFailure { error ->
-                message = error.message ?: "İndirme başarısız"
-            }
-        }
-    }
-
-    private suspend fun check() {
-        if (checking) return
+        if (checking || downloading || installing) return
+        dismissed = null
+        // Reserve the state before dispatching so repeated clicks cannot overlap.
         checking = true
-        val found = runCatching { withContext(Dispatchers.IO) { fetch() } }
-        checking = false
-        found.onSuccess { release ->
-            if (release == null) {
-                latest = null
-                assetUrl = null
-                message = "Yayınlanmış güncelleme yok. Bu sürüm güncel."
-                return@onSuccess
+        scope.launch { check(reserved = true) }
+    }
+    fun dismiss() { if (!installing) dismissed = latest }
+    private suspend fun check(reserved: Boolean = false) {
+        if ((!reserved && checking) || downloading || installing) return
+        checking = true
+        message = "Yeni sürüm kontrol ediliyor…"
+        var cancelled = false
+        try {
+            val found = withContext(Dispatchers.IO) { service.latest() }
+            if (found?.version != release?.version || found?.asset != release?.asset) {
+                ready = false; packageFile = null; progress = 0f
             }
-            latest = release.version
-            notes = release.notes
-            assetUrl = release.assetUrl
-            message = if (newer(release.version, AppVersion.NAME)) {
-                "Yeni sürüm ${release.version} hazır"
-            } else {
-                "Güncelsin ($NAME_LABEL)"
+            release = found; latest = found?.version; notes = found?.notes
+            message = when {
+                found == null -> "Henüz yayımlanmış kararlı sürüm yok"
+                available == null -> "Güncelsin (sürüm $currentVersion)"
+                found.asset == null -> "${found.version} yayımlanmış; doğrulanabilir Windows kurulum paketi henüz hazır değil"
+                ready -> "${found.version} indirildi; yeniden başlatarak güncelleyebilirsin"
+                else -> "Yeni sürüm ${found.version} hazır"
             }
-        }.onFailure { error ->
-            message = error.message ?: "Güncelleme kontrolü başarısız"
+        } catch (cancel: CancellationException) { cancelled = true; throw cancel }
+        catch (failure: Exception) { message = "Kontrol başarısız: ${failure.message ?: "Bağlantıyı kontrol et"}" }
+        finally {
+            checking = false
+            if (!cancelled) {
+                if (automatic && backgroundDownload && canDownload && !ready) download()
+                announce()
+            }
         }
     }
-
-    private fun fetch(): Release? {
-        val request = Request.Builder()
-            .url("https://api.github.com/repos/${AppVersion.REPO}/releases/latest")
-            .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", "Metrolist/${AppVersion.NAME}")
-            .build()
-        http.newCall(request).execute().use { response ->
-            if (response.code == 404) return null
-            if (!response.isSuccessful) error("GitHub ${response.code}")
-            val root = json.parseToJsonElement(response.body?.string().orEmpty()).jsonObject
-            val version = root["tag_name"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty().removePrefix("v")
-            if (version.isBlank()) return null
-            val body = root["body"]?.jsonPrimitive?.contentOrNull?.trim()?.take(280)
-            val asset = root["assets"]?.jsonArray.orEmpty().firstOrNull { item ->
-                val name = item.jsonObject["name"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                name.endsWith(".exe", true) && name.contains("Metrolist", true)
-            }?.jsonObject
-            val url = asset?.get("browser_download_url")?.jsonPrimitive?.contentOrNull
-            return Release(version, body, url)
-        }
-    }
-
-    private fun download(url: String): File {
-        val request = Request.Builder().url(url).header("User-Agent", "Metrolist/${AppVersion.NAME}").build()
-        http.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) error("İndirme ${response.code}")
-            val body = response.body ?: error("Boş yanıt")
-            val dir = File(appDir(), "updates").apply { mkdirs() }
-            val dest = File(dir, "Metrolist-setup.exe")
-            val total = body.contentLength()
-            body.byteStream().use { input ->
-                dest.outputStream().use { output ->
-                    val buffer = ByteArray(16 * 1024)
-                    var readTotal = 0L
-                    while (true) {
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        output.write(buffer, 0, count)
-                        readTotal += count
-                        if (total > 0) progress = (readTotal.toFloat() / total).coerceIn(0f, 1f)
+    fun download() {
+        val asset = release?.asset ?: return
+        if (available == null || checking || downloading || installing || ready) return
+        downloading = true; cancelRequested = false; receivedBytes = 0; totalBytes = asset.size; progress = 0f
+        message = "Güncelleme arka planda indiriliyor…"
+        downloadJob = scope.launch {
+            try {
+                var lastReportedAt = 0L
+                val file = withContext(Dispatchers.IO) {
+                    service.download(asset, directory) { received, total ->
+                        if (cancelRequested) throw java.io.IOException("İndirme iptal edildi")
+                        val now = System.nanoTime()
+                        if (received == total || now - lastReportedAt > 100_000_000) {
+                            lastReportedAt = now
+                            scope.launch {
+                                if (downloading && !cancelRequested) {
+                                    receivedBytes = received; totalBytes = total
+                                    progress = (received.toFloat() / total.coerceAtLeast(1)).coerceIn(0f, 1f)
+                                }
+                            }
+                        }
                     }
                 }
+                if (cancelRequested) { message = "İndirme iptal edildi"; return@launch }
+                packageFile = file; ready = true; progress = 1f; receivedBytes = asset.size
+                message = "Güncelleme indirildi ve doğrulandı. Yeniden başlatarak yükle."
+            } catch (cancel: CancellationException) { throw cancel }
+            catch (failure: Exception) {
+                message = if (cancelRequested) "İndirme iptal edildi" else "İndirme başarısız: ${failure.message}"
+            } finally {
+                downloading = false
+                downloadJob = null
+                if (!cancelRequested) announce()
             }
-            if (dest.length() < 1_000_000) {
-                dest.delete()
-                error("İndirilen dosya kurulum paketi değil")
-            }
-            return dest
         }
     }
-
-    private data class Release(val version: String, val notes: String?, val assetUrl: String?)
-
-    private companion object {
-        const val CHECK_EVERY_MS = 3 * 60 * 60 * 1000L
-        const val NAME_LABEL = "sürüm ${AppVersion.NAME}"
-        val json = Json { ignoreUnknownKeys = true }
-        val http = OkHttpClient.Builder()
-            .connectTimeout(12, TimeUnit.SECONDS)
-            .readTimeout(60, TimeUnit.SECONDS)
-            .followRedirects(true)
-            .build()
-
-        fun newer(remote: String, local: String): Boolean {
-            fun parts(value: String) = value.trim().removePrefix("v").substringBefore('-')
-                .split('.')
-                .map { it.toIntOrNull() ?: 0 }
-            val left = parts(remote)
-            val right = parts(local)
-            val size = maxOf(left.size, right.size)
-            for (index in 0 until size) {
-                val delta = left.getOrElse(index) { 0 } - right.getOrElse(index) { 0 }
-                if (delta != 0) return delta > 0
+    fun cancelDownload() {
+        if (!downloading) return
+        cancelRequested = true
+        service.cancel()
+        message = "İndirme iptal ediliyor…"
+    }
+    fun install(onExit: () -> Unit) {
+        if (checking || downloading || installing || !canDownload) return
+        if (!ready) { download(); return }
+        val asset = release?.asset ?: return
+        val version = available ?: return
+        val file = packageFile ?: return
+        installing = true
+        message = "Güncelleme hazırlanıyor…"
+        scope.launch {
+            var packageVerified = false
+            try {
+                withContext(Dispatchers.IO) {
+                    GitHubUpdateService.verifyPackage(file, asset)
+                    packageVerified = true
+                    installer.launch(file, version, asset.sha256, directory)
+                }
+                message = "Yeniden başlatılıyor…"
+                onExit()
+            } catch (cancel: CancellationException) { installing = false; throw cancel }
+            catch (failure: Exception) {
+                installing = false
+                if (!packageVerified) { ready = false; packageFile = null; progress = 0f }
+                message = "Kurulum başlatılamadı: ${failure.message}"
             }
-            return false
         }
+    }
+    private fun announce() {
+        val version = available ?: return
+        if (installing || (downloading && ready)) return
+        val stage = if (ready) "ready" else "found"
+        val key = "$version:$stage"
+        val marker = File(directory, "notified.txt")
+        if (runCatching { marker.readText().trim() }.getOrNull() == key) return
+        runCatching { directory.mkdirs(); marker.writeText(key) }
+        if (ready) notify("Güncelleme hazır", "Metrolist $version indirildi. Yeniden başlatarak güncelleyebilirsin.")
+        else notify("Yeni sürüm", "Metrolist $version yayımlandı.")
+    }
+    private fun readResult(): String? {
+        val file = File(directory, "update-result.json")
+        if (!file.isFile) return null
+        return runCatching {
+            val result = kotlinx.serialization.json.Json.decodeFromString<UpdateResult>(file.readText().removePrefix("\uFEFF"))
+            if (result.success) "Güncelleme tamamlandı: ${result.version}" else "Önceki güncelleme tamamlanamadı: ${result.message}"
+        }.getOrNull().also { file.delete() }
     }
 }

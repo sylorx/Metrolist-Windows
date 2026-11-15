@@ -28,6 +28,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.window.FrameWindowScope
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -91,6 +92,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
@@ -116,6 +119,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Brush
@@ -142,15 +146,15 @@ private val Glide = spring<Dp>(dampingRatio = 0.78f, stiffness = 380f)
 
 private data class NowPlaying(val id: String, val title: String, val artists: String, val thumbnail: String?)
 
-private val Ink: Color
+internal val Ink: Color
     @Composable get() = LocalPalette.current.ink
-private val Panel: Color
+internal val Panel: Color
     @Composable get() = LocalPalette.current.panel
-private val Card: Color
+internal val Card: Color
     @Composable get() = LocalPalette.current.card
-private val Accent: Color
+internal val Accent: Color
     @Composable get() = LocalPalette.current.accent
-private val Muted: Color
+internal val Muted: Color
     @Composable get() = LocalPalette.current.muted
 private val LocalPlayingId = staticCompositionLocalOf<String?> { null }
 
@@ -195,6 +199,12 @@ fun MetrolistApp(model: AppModel) {
         Modifier
             .fillMaxSize()
             .background(Ink)
+            .onPreviewKeyEvent { event ->
+                if (event.type == KeyEventType.KeyDown && event.isCtrlPressed && event.key == Key.K) {
+                    model.quickOpen = !model.quickOpen
+                    true
+                } else false
+            }
             .onKeyEvent { event ->
                 if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
                 val player = model.player
@@ -231,7 +241,7 @@ fun MetrolistApp(model: AppModel) {
             Rail(model)
             Column(Modifier.weight(1f).fillMaxHeight()) {
                 TopBar(model)
-                CompositionLocalProvider(LocalPlayingId provides playingId) {
+                CompositionLocalProvider(LocalPlayingId provides playingId, LocalAppModel provides model) {
                     Content(model, Modifier.fillMaxSize())
                 }
             }
@@ -247,13 +257,22 @@ fun MetrolistApp(model: AppModel) {
                 enter = fadeIn(tween(240)) + expandHorizontally(tween(320)),
                 exit = fadeOut(tween(160)) + shrinkHorizontally(tween(240)),
             ) {
-                QueuePanel(model, Modifier.width(300.dp).fillMaxHeight())
+                QueuePanel(model, Modifier.width(360.dp).fillMaxHeight())
+            }
+        }
+        if (model.status != null || player.error != null || player.sleepDeadline != null || player.sleepAfterTrack) {
+            Row(Modifier.fillMaxWidth().background(Panel).padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(player.error ?: model.status ?: if (player.sleepAfterTrack) "Uyku: parça sonunda duracak" else "Uyku: ${formatTime(player.sleepRemainingMs)}",
+                    color = Muted, modifier = Modifier.weight(1f), maxLines = 2)
+                if (player.error != null) TextButton(onClick = player::retry) { Text("Yeniden dene") }
+                if (player.sleepDeadline != null || player.sleepAfterTrack) TextButton(onClick = { player.setSleep() }) { Text("Zamanlayıcıyı iptal et") }
             }
         }
         UpdateNotice(model)
         PlayerBar(model)
     }
 
+    if (model.quickOpen) QuickOpenDialog(model)
     if (model.showAdd) {
         AlertDialog(
             onDismissRequest = { model.showAdd = false },
@@ -315,17 +334,23 @@ private fun Rail(model: AppModel) {
             }
         }
         Spacer(Modifier.height(14.dp))
-        NavRow("Ana sayfa", Icons.Default.Home, model.current is Dest.Home, "icons/home.jpg") { model.openRail(Dest.Home) }
-        NavRow("Keşfet", Icons.Default.GraphicEq, model.current is Dest.Explore, "icons/explore.jpg") { model.openRail(Dest.Explore) }
-        NavRow("Kitaplık", Icons.Default.LibraryMusic, model.current is Dest.Library, "icons/library.jpg") { model.openRail(Dest.Library) }
-        NavRow("Geçmiş", Icons.Default.History, model.current is Dest.History, "icons/history.jpg") { model.openRail(Dest.History) }
+        NavRow("Ana sayfa", Icons.Default.Home, model.current is Dest.Home, "icons/home.png", plain = true) { model.openRail(Dest.Home) }
+        NavRow("Keşfet", Icons.Default.GraphicEq, model.current is Dest.Explore, "icons/explore.png", plain = true) { model.openRail(Dest.Explore) }
+        NavRow("Kitaplık", Icons.Default.LibraryMusic, model.current is Dest.Library, "icons/library.png", plain = true) { model.openRail(Dest.Library) }
+        NavRow("Sana özel", Icons.Default.GraphicEq, model.current is Dest.Personal) { model.openRail(Dest.Personal) }
+        NavRow("Yerel müzik", Icons.Default.MusicNote, model.current is Dest.LocalMusic) { model.openRail(Dest.LocalMusic) }
+        NavRow("İstatistikler", Icons.Default.GraphicEq, model.current is Dest.Insights) { model.openRail(Dest.Insights) }
+        NavRow("Geçmiş", Icons.Default.History, model.current is Dest.History, "icons/history.png", plain = true) { model.openRail(Dest.History) }
         Spacer(Modifier.height(12.dp))
         HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
         Spacer(Modifier.height(10.dp))
         Text("Kitaplığın", color = Muted, style = MaterialTheme.typography.labelMedium)
         Spacer(Modifier.height(6.dp))
-        NavRow("Beğenilenler", Icons.Default.Favorite, model.current is Dest.Liked, "icons/heart.jpg") { model.openRail(Dest.Liked) }
+        NavRow("Beğenilenler", Icons.Default.Favorite, model.current is Dest.Liked, "icons/heart.png", plain = true) { model.openRail(Dest.Liked) }
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            items(SmartRule.entries) { rule ->
+                NavRow(rule.title, Icons.Default.QueueMusic, (model.current as? Dest.Smart)?.rule == rule) { model.openRail(Dest.Smart(rule)) }
+            }
             items(model.localPlaylists, key = { it.id }) { playlist ->
                 val open = (model.current as? Dest.LocalList)?.id == playlist.id
                 NavRow(playlist.title, Icons.Default.QueueMusic, open, "icons/playlist.jpg") { model.openLocal(playlist.id) }
@@ -343,7 +368,7 @@ private fun Rail(model: AppModel) {
             }
         }
         Spacer(Modifier.height(6.dp))
-        NavRow("Ayarlar", Icons.Default.Settings, model.current is Dest.Settings, "icons/settings.jpg") { model.openRail(Dest.Settings) }
+        NavRow("Ayarlar", Icons.Default.Settings, model.current is Dest.Settings, "icons/settings.png", plain = true) { model.openRail(Dest.Settings) }
     }
 }
 
@@ -369,18 +394,19 @@ private fun TopBar(model: AppModel) {
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             keyboardActions = KeyboardActions(onSearch = { model.submitSearch() }),
         )
+        TextButton(onClick = { model.quickOpen = true }) { Text("Ctrl+K") }
     }
 }
 
 @Composable
-private fun ArtOrIcon(path: String?, icon: ImageVector, label: String, tint: Color, modifier: Modifier = Modifier) {
+private fun ArtOrIcon(path: String?, icon: ImageVector, label: String, tint: Color, modifier: Modifier = Modifier, plain: Boolean = false) {
     val image = path?.let { remember(it) { loadImage(it) } }
     if (image != null) {
         Image(
             bitmap = image,
             contentDescription = label,
-            contentScale = ContentScale.Crop,
-            modifier = modifier.clip(RoundedCornerShape(8.dp)).graphicsLayer {
+            contentScale = if (plain) ContentScale.Fit else ContentScale.Crop,
+            modifier = if (plain) modifier else modifier.clip(RoundedCornerShape(8.dp)).graphicsLayer {
                 scaleX = 1.34f
                 scaleY = 1.34f
                 translationY = -size.height * 0.08f
@@ -392,7 +418,7 @@ private fun ArtOrIcon(path: String?, icon: ImageVector, label: String, tint: Col
 }
 
 @Composable
-private fun NavRow(label: String, icon: ImageVector, selected: Boolean, art: String? = null, onClick: () -> Unit) {
+private fun NavRow(label: String, icon: ImageVector, selected: Boolean, art: String? = null, plain: Boolean = false, onClick: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
     val background by animateColorAsState(
@@ -424,10 +450,17 @@ private fun NavRow(label: String, icon: ImageVector, selected: Boolean, art: Str
                 .clip(CircleShape)
                 .background(Accent),
         )
-        ArtOrIcon(art, icon, label, if (selected) Color.White else Muted, Modifier.size(26.dp).graphicsLayer {
-            scaleX = iconScale
-            scaleY = iconScale
-        })
+        ArtOrIcon(
+            art,
+            icon,
+            label,
+            if (selected) Color.White else Muted,
+            Modifier.size(26.dp).graphicsLayer {
+                scaleX = iconScale
+                scaleY = iconScale
+            },
+            plain = plain,
+        )
         Spacer(Modifier.width(10.dp))
         Text(
             label,
@@ -461,6 +494,10 @@ private fun Content(model: AppModel, modifier: Modifier) {
                 Dest.Settings -> SettingsScreen(model)
                 Dest.Liked -> SavedTracks(model, "Beğenilen şarkılar", model.liked, "Beğendiğin şarkılar bu bilgisayarda durur.", heart = true)
                 Dest.Shortcuts -> ShortcutsScreen(model)
+                Dest.LocalMusic -> LocalMusicScreen(model)
+                Dest.Insights -> InsightsScreen(model)
+                Dest.Personal -> CompositionLocalProvider(androidx.compose.material3.LocalContentColor provides Color.White) { PersonalLibraryScreen(model) }
+                is Dest.Smart -> SmartScreen(model, dest.rule)
                 is Dest.LocalList -> LocalListScreen(model, dest.id)
                 is Dest.Album -> AlbumScreen(model)
                 is Dest.Artist -> ArtistScreen(model)
@@ -533,7 +570,7 @@ private fun HomeScreen(model: AppModel) {
                 }
                 recent.forEach { entry ->
                     QuickTile(entry.title, entry.artists, entry.thumbnail, accentTile = false) {
-                        model.player.playAll(listOf(Track(entry.id, entry.title, entry.artists, entry.thumbnail, 0)), 0)
+                        model.player.playAll(listOf(entry.toTrack()), 0)
                     }
                 }
             }
@@ -544,7 +581,7 @@ private fun HomeScreen(model: AppModel) {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     items(recent, key = { it.id }) { entry ->
                         PlayedCard(entry, 0) {
-                            model.player.playAll(listOf(Track(entry.id, entry.title, entry.artists, entry.thumbnail, 0)), 0)
+                            model.player.playAll(listOf(entry.toTrack()), 0)
                         }
                     }
                 }
@@ -612,7 +649,7 @@ private fun SectionRow(section: HomePage.Section, model: AppModel) {
 }
 
 @Composable
-private fun Cover(
+internal fun Cover(
     url: String?,
     modifier: Modifier,
     description: String? = null,
@@ -688,6 +725,7 @@ private fun MediaCard(item: YTItem, model: AppModel) {
 private fun SearchScreen(model: AppModel) {
     Column(Modifier.fillMaxSize()) {
         PageHeader("Ara", model, "Üstteki alandan da arayabilirsin")
+        TextButton(onClick = { model.openRail(Dest.Personal) }) { Text("Kitaplığımda da ara →") }
         if (model.suggestions.isNotEmpty()) {
             Spacer(Modifier.height(10.dp))
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -721,7 +759,7 @@ private fun SearchScreen(model: AppModel) {
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             itemsIndexed(model.searchItems, key = { index, item -> item.id + index }) { _, item ->
                 val duration = (item as? SongItem)?.duration?.takeIf { it > 0 }?.let { formatTime(it * 1000L) }
-                SongRow(item.title, itemSubtitle(item), item.thumbnail, duration, item.id) { model.openItem(item) }
+                SongRow(item.title, itemSubtitle(item), item.thumbnail, duration, item.asTrack()?.id) { model.openItem(item) }
             }
             if (model.searchContinuation != null) {
                 item { Button(onClick = model::loadMoreSearch) { Text("Daha fazla") } }
@@ -818,7 +856,7 @@ private fun LibraryScreen(model: AppModel) {
                 }
             }
             items(model.libraryItems, key = { "yt-" + it.id + it.title }) { item ->
-                SongRow(item.title, itemSubtitle(item), item.thumbnail) { model.openItem(item) }
+                SongRow(item.title, itemSubtitle(item), item.thumbnail, id = item.asTrack()?.id) { model.openItem(item) }
             }
             if (model.libraryContinuation != null) {
                 item { Button(onClick = model::loadMoreLibrary) { Text("Daha fazla") } }
@@ -912,7 +950,7 @@ private fun RandomButton(enabled: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun PlayButton(onClick: () -> Unit) {
+internal fun PlayButton(onClick: () -> Unit) {
     Surface(shape = CircleShape, color = Accent, modifier = Modifier.size(48.dp).clickable(onClick = onClick)) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Icon(Icons.Default.PlayArrow, contentDescription = "Çal", tint = Color.Black)
@@ -921,122 +959,9 @@ private fun PlayButton(onClick: () -> Unit) {
 }
 
 @Composable
-private fun LocalListScreen(model: AppModel, id: String) {
-    val playlist = model.localPlaylists.find { it.id == id }
-    SavedTracks(
-        model = model,
-        title = playlist?.title ?: "Liste",
-        tracks = playlist?.tracks.orEmpty(),
-        empty = "Bu liste boş. Çalan şarkıyı ekle düğmesiyle doldur.",
-        thumbnail = playlist?.tracks?.firstOrNull()?.thumbnail,
-    )
-}
-
-private enum class TrackSort(val label: String) {
-    Recent("Tarihe göre"),
-    Title("Ada göre"),
-    Artist("Sanatçı"),
-    Duration("Süre"),
-}
-
-private fun List<SavedTrack>.arrange(sort: TrackSort, query: String): List<SavedTrack> {
-    val filtered = if (query.isBlank()) {
-        this
-    } else {
-        filter { it.title.contains(query, ignoreCase = true) || it.artists.contains(query, ignoreCase = true) }
-    }
-    return when (sort) {
-        TrackSort.Recent -> filtered
-        TrackSort.Title -> filtered.sortedBy { it.title.lowercase() }
-        TrackSort.Artist -> filtered.sortedBy { it.artists.lowercase() }
-        TrackSort.Duration -> filtered.sortedByDescending { it.durationMs }
-    }
-}
-
-@Composable
-private fun SavedTracks(
-    model: AppModel,
-    title: String,
-    tracks: List<SavedTrack>,
-    empty: String,
-    thumbnail: String? = null,
-    heart: Boolean = false,
-) {
-    var sort by remember { mutableStateOf(TrackSort.Recent) }
-    var filter by remember { mutableStateOf("") }
-    val shown = tracks.arrange(sort, filter)
-    Column(Modifier.fillMaxSize()) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (heart) {
-                Box(
-                    Modifier.size(148.dp).clip(RoundedCornerShape(12.dp)).background(Accent),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(Icons.Default.Favorite, contentDescription = null, tint = Color.Black, modifier = Modifier.size(56.dp))
-                }
-            } else {
-                Cover(thumbnail, Modifier.size(148.dp))
-            }
-            Spacer(Modifier.width(20.dp))
-            Column(Modifier.weight(1f)) {
-                Text(title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = Color.White, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Text("${tracks.size} şarkı", color = Muted)
-                model.error?.let { Text(it, color = Accent) }
-                Spacer(Modifier.height(12.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (shown.isNotEmpty()) PlayButton { model.player.playAll(shown.map { it.toTrack() }, 0) }
-                }
-            }
-        }
-        Spacer(Modifier.height(14.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(
-                value = filter,
-                onValueChange = { filter = it },
-                modifier = Modifier.width(240.dp),
-                placeholder = { Text("Listede ara") },
-                singleLine = true,
-            )
-            Spacer(Modifier.weight(1f))
-            TrackSort.entries.forEach { choice ->
-                FilterChip(
-                    selected = sort == choice,
-                    onClick = { sort = choice },
-                    label = { Text(choice.label) },
-                    modifier = Modifier.padding(start = 6.dp),
-                )
-            }
-        }
-        Spacer(Modifier.height(8.dp))
-        if (tracks.isEmpty()) Text(empty, color = Muted)
-        else if (shown.isEmpty()) Text("Bu aramaya uyan şarkı yok.", color = Muted)
-        LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            item {
-                Row(Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
-                    Text("#", color = Muted, modifier = Modifier.width(36.dp))
-                    Text("Başlık", color = Muted, modifier = Modifier.weight(1f))
-                    Text("Süre", color = Muted)
-                }
-            }
-            itemsIndexed(shown, key = { index, track -> track.id + index }) { index, track ->
-                SongRow(
-                    track.title,
-                    track.artists,
-                    track.thumbnail,
-                    trailing = track.durationMs.takeIf { it > 0 }?.let { formatTime(it) },
-                    id = track.id,
-                    index = "${index + 1}",
-                ) {
-                    model.player.playAll(shown.map { it.toTrack() }, index)
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun ShortcutsScreen(model: AppModel) {
     val rows = listOf(
+        "Ctrl + K" to "Hızlı arama ve komutlar",
         "Boşluk" to "Oynat veya duraklat",
         "Ctrl + Sağ" to "Sonraki parça",
         "Ctrl + Sol" to "Önceki parça",
@@ -1065,7 +990,7 @@ private fun ShortcutsScreen(model: AppModel) {
 private fun HistoryScreen(model: AppModel) {
     val counts = model.history.groupingBy { it.id }.eachCount()
     val unique = model.history.distinctBy { it.id }
-    val tracks = unique.map { Track(it.id, it.title, it.artists, it.thumbnail, 0) }
+    val tracks = unique.map { it.toTrack() }
     val top = unique.map { it to (counts[it.id] ?: 1) }.sortedByDescending { it.second }.take(8)
     LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
@@ -1109,7 +1034,7 @@ private fun HistoryScreen(model: AppModel) {
         model.remoteHistory.forEach { section ->
             item { Text(section.title, color = Muted) }
             items(section.songs, key = { section.title + it.id }) { song ->
-                SongRow(song.title, song.artists.joinToString { it.name }, song.thumbnail) {
+                SongRow(song.title, song.artists.joinToString { it.name }, song.thumbnail, id = song.id) {
                     model.playSongs(section.songs, section.songs.indexOf(song))
                 }
             }
@@ -1405,6 +1330,7 @@ private fun AlbumScreen(model: AppModel) {
                 song.artists.joinToString { it.name },
                 song.thumbnail,
                 formatTime((song.duration ?: 0) * 1000L),
+                id = song.id,
                 index = "${index + 1}",
             ) {
                 page?.let { model.playSongs(it.songs, index) }
@@ -1436,7 +1362,7 @@ private fun ArtistScreen(model: AppModel) {
                 if (songs.isNotEmpty()) {
                     Column {
                         songs.forEachIndexed { index, song ->
-                            SongRow(song.title, song.artists.joinToString { it.name }, song.thumbnail) {
+                            SongRow(song.title, song.artists.joinToString { it.name }, song.thumbnail, id = song.id) {
                                 model.playSongs(songs, index)
                             }
                         }
@@ -1474,6 +1400,7 @@ private fun PlaylistScreen(model: AppModel) {
                 song.artists.joinToString { it.name },
                 song.thumbnail,
                 formatTime((song.duration ?: 0) * 1000L),
+                id = song.id,
                 index = "${index + 1}",
             ) {
                 page?.let { model.playSongs(it.songs, index) }
@@ -1510,15 +1437,20 @@ private fun SettingsScreen(model: AppModel) {
         Text("Ayarlar", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = Color.White)
         Text(model.accountName?.let { "Hesap: $it" } ?: "Oturum yok, çalma açık", color = Muted)
         model.error?.let { Text(it, color = Accent) }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("Hesap", "Görünüm", "Ses", "Sistem").forEach { label ->
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("Hesap", "Görünüm", "Ses", "Sistem", "Başlık", "Bildirim", "Görev çubuğu", "Veriler", "Uyku").forEach { label ->
                 FilterChip(selected = tab == label, onClick = { tab = label }, label = { Text(label) })
             }
         }
         when (tab) {
             "Hesap" -> AccountSettings(model)
             "Görünüm" -> LookSettings(model)
-            "Ses" -> AudioSettings(model)
+            "Ses" -> { AudioSettings(model); AudioStudio(model) }
+            "Veriler" -> DataSettings(model)
+            "Uyku" -> SleepSettings(model.player)
+            "Başlık" -> CaptionSettings(model)
+            "Bildirim" -> ToastSettings(model)
+            "Görev çubuğu" -> BarSettings(model)
             else -> SystemSettings(model)
         }
     }
@@ -1536,6 +1468,7 @@ private fun AccountSettings(model: AppModel) {
             onValueChange = { model.cookieDraft = it },
             modifier = Modifier.fillMaxWidth().height(120.dp),
             placeholder = { Text("Cookie") },
+            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = model::saveCookie) { Text("Kaydet") }
@@ -1660,23 +1593,17 @@ private fun AudioSettings(model: AppModel) {
 
 @Composable
 private fun SystemSettings(model: AppModel) {
-    StudioCard("Güncelleme") {
-        Text("Yüklü sürüm ${AppVersion.NAME}", color = Color.White, fontWeight = FontWeight.Medium)
-        Text(model.updates.message, color = Muted)
-        model.updates.notes?.takeIf { model.updates.pending != null }?.let {
-            Text(it, color = Muted, maxLines = 3, overflow = TextOverflow.Ellipsis)
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = model.updates::requestCheck, enabled = !model.updates.checking && !model.updates.downloading) {
-                Text(if (model.updates.checking) "Kontrol ediliyor" else "Güncellemeleri kontrol et")
+    StudioCard("Masaüstü") {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Çalan parça kartı", color = Color.White, fontWeight = FontWeight.Medium)
+                Text("Masaüstünün arkasında durur. Bıraktığın yer kaydolur ve program açılınca orada kalır.", color = Muted)
             }
-            if (model.updates.pending != null) {
-                Button(onClick = { model.updates.install { model.player.stop(); exitProcess(0) } }, enabled = !model.updates.downloading) {
-                    Text(if (model.updates.downloading) "İndiriliyor %${(model.updates.progress * 100).toInt()}" else "Güncelle")
-                }
-            }
+            Switch(checked = model.widgetOn, onCheckedChange = model::setWidget)
         }
+        Text("Görev çubuğunda simgenin üzerine gelince önceki, oynat ve sonraki çıkar. Bildirim alanındaki simgeden de yönetilir.", color = Muted)
     }
+    UpdateSettings(model)
     StudioCard("Pencere") {
         Text("Kapatmak müziği durdurmaz. Simge tepside kalır. Tepsiden Çık uygulamayı kapatır.", color = Muted)
     }
@@ -1709,7 +1636,223 @@ private fun SystemSettings(model: AppModel) {
 }
 
 @Composable
-private fun StudioCard(title: String, content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
+private fun ToastSettings(model: AppModel) {
+    StudioCard("Şarkı değişince") {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Alt kart", color = Color.White, fontWeight = FontWeight.Medium)
+                Text("Şarkı değişince belirir. Kapak veya isimden tutup istediğin yere sürükle; bıraktığın yer kaydolur. Seçtiğin süre sonra yavaşça kaybolur, üstüne gelince açık kalır.", color = Muted)
+            }
+            Switch(checked = model.toastOn, onCheckedChange = model::setToast)
+        }
+        Text("Süre", color = Color.White)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(1, 2, 3, 5, 8).forEach { seconds ->
+                FilterChip(selected = model.toastSeconds == seconds, onClick = { model.saveToastSeconds(seconds) }, label = { Text("$seconds sn") })
+            }
+        }
+        Text("Saydamlık", color = Color.White)
+        Slider(value = model.toastOpacity, onValueChange = model::saveToastOpacity, valueRange = 0.35f..1f)
+        Text("Boyut", color = Color.White)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(0.8f to "Küçük", 1f to "Orta", 1.25f to "Büyük").forEach { (scale, label) ->
+                FilterChip(selected = model.toastScale == scale, onClick = { model.saveToastScale(scale) }, label = { Text(label) })
+            }
+        }
+        Text("Renk", color = Color.White)
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            accentChoices.forEach { choice ->
+                Box(
+                    Modifier
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .background(choice.color)
+                        .border(2.dp, if (model.toastColor == choice.id) Color.White else Color.Transparent, CircleShape)
+                        .clickable { model.saveToastColor(choice.id) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+internal fun FrameWindowScope.CaptionBar(
+    title: String,
+    colors: List<Color>,
+    maximized: Boolean,
+    onMinimize: () -> Unit,
+    onMaximize: () -> Unit,
+    onClose: () -> Unit,
+) {
+    val ink = captionInk(colors)
+    val brush = if (colors.size > 1) Brush.horizontalGradient(colors) else Brush.horizontalGradient(listOf(colors.first(), colors.first()))
+    val drag = Modifier.pointerInput(Unit) {
+        var originX = 0
+        var originY = 0
+        var windowX = 0
+        var windowY = 0
+        detectDragGestures(
+            onDragStart = {
+                val pointer = java.awt.MouseInfo.getPointerInfo().location
+                originX = pointer.x
+                originY = pointer.y
+                windowX = window.x
+                windowY = window.y
+            },
+        ) { change, _ ->
+            change.consume()
+            val pointer = java.awt.MouseInfo.getPointerInfo().location
+            window.setLocation(windowX + pointer.x - originX, windowY + pointer.y - originY)
+        }
+    }
+    Row(Modifier.fillMaxWidth().height(40.dp).background(brush), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.weight(1f).fillMaxHeight().then(drag), contentAlignment = Alignment.CenterStart) {
+            Text(
+                title,
+                color = ink,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 14.dp, end = 8.dp),
+            )
+        }
+        CaptionButton(onClick = onMinimize) {
+            Box(Modifier.size(width = 12.dp, height = 2.dp).background(ink))
+        }
+        CaptionButton(onClick = onMaximize) {
+            Box(
+                Modifier
+                    .size(11.dp)
+                    .border(1.5.dp, ink, RoundedCornerShape(if (maximized) 1.dp else 2.dp)),
+            )
+        }
+        CaptionButton(onClick = onClose, close = true) {
+            Text("×", color = ink, fontWeight = FontWeight.Medium)
+        }
+    }
+}
+
+@Composable
+private fun CaptionButton(onClick: () -> Unit, close: Boolean = false, content: @Composable () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    Box(
+        Modifier
+            .size(width = 46.dp, height = 40.dp)
+            .background(if (!hovered) Color.Transparent else if (close) Color(0xFFE81123) else Color.White.copy(alpha = 0.14f))
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) { content() }
+}
+
+@Composable
+private fun CaptionSettings(model: AppModel) {
+    val track = model.player.current
+    val colors = captionColors(model.caption, model.look.palette.accent, model.captionStart, model.captionEnd)
+    val stops = if (colors.size > 1) colors else listOf(colors.first(), colors.first())
+    val ink = captionInk(colors)
+    val sample = if (model.captionText == "song" && track != null) {
+        listOf(track.title, track.artists).filter { it.isNotBlank() }.joinToString(" — ")
+    } else {
+        "Metrolist"
+    }
+    StudioCard("Pencere başlığı") {
+        Text("Üst şeridin rengi ve yazısı. Seçim kaydolur.", color = Muted)
+        Box(
+            Modifier.fillMaxWidth().height(36.dp).clip(RoundedCornerShape(8.dp)).background(Brush.horizontalGradient(stops)).padding(horizontal = 12.dp),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            Text(sample, color = ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Text("Renk", color = Color.White)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("system" to "Sistem", "ink" to "Koyu", "white" to "Beyaz", "accent" to "Vurgu").forEach { (id, label) ->
+                FilterChip(selected = model.caption == id, onClick = { model.saveCaption(id) }, label = { Text(label) })
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            accentChoices.forEach { choice ->
+                Box(
+                    Modifier
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .background(choice.color)
+                        .border(2.dp, if (model.caption == choice.id) Color.White else Color.Transparent, CircleShape)
+                        .clickable { model.saveCaption(choice.id) },
+                )
+            }
+        }
+        Text("Özel gradyan", color = Color.White)
+        var editingStart by remember { mutableStateOf(true) }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            FilterChip(selected = editingStart, onClick = { editingStart = true }, label = { Text("Başlangıç") })
+            FilterChip(selected = !editingStart, onClick = { editingStart = false }, label = { Text("Bitiş") })
+            Box(Modifier.size(22.dp).clip(CircleShape).background(hexColor(model.captionStart)).border(2.dp, if (model.caption == "custom" && editingStart) Color.White else Color.Transparent, CircleShape))
+            Box(Modifier.size(22.dp).clip(CircleShape).background(hexColor(model.captionEnd)).border(2.dp, if (model.caption == "custom" && !editingStart) Color.White else Color.Transparent, CircleShape))
+        }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            captionPalette.forEach { color ->
+                val hex = colorHex(color)
+                val selected = model.caption == "custom" && hex.equals(if (editingStart) model.captionStart else model.captionEnd, ignoreCase = true)
+                Box(
+                    Modifier
+                        .size(26.dp)
+                        .clip(CircleShape)
+                        .background(color)
+                        .border(2.dp, if (selected) Color.White else Color.Transparent, CircleShape)
+                        .clickable { model.saveCaptionStop(editingStart, hex) },
+                )
+            }
+        }
+        Text("Gradyan", color = Color.White)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            captionGradients.forEach { gradient ->
+                Box(
+                    Modifier
+                        .width(64.dp)
+                        .height(28.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Brush.horizontalGradient(gradient.colors))
+                        .border(2.dp, if (model.caption == gradient.id) Color.White else Color.Transparent, RoundedCornerShape(8.dp))
+                        .clickable { model.saveCaption(gradient.id) },
+                )
+            }
+        }
+        Text("Ovallik", color = Color.White)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("sharp" to "Keskin", "small" to "Hafif", "round" to "Yuvarlak").forEach { (id, label) ->
+                FilterChip(selected = model.captionCorner == id, onClick = { model.saveCaptionCorner(id) }, label = { Text(label) })
+            }
+        }
+        Text("Yazı", color = Color.White)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("app" to "Metrolist", "song" to "Çalan parça").forEach { (id, label) ->
+                FilterChip(selected = model.captionText == id, onClick = { model.saveCaptionText(id) }, label = { Text(label) })
+            }
+        }
+    }
+}
+
+@Composable
+private fun BarSettings(model: AppModel) {
+    StudioCard("Görev çubuğu") {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Çubuk kontrolü", color = Color.White, fontWeight = FontWeight.Medium)
+                Text("Yalnızca görev çubuğunun üzerinde durur. Çubuk boyunca sürükle, bıraktığın yer hatırlanır.", color = Muted)
+            }
+            Switch(checked = model.barOn, onCheckedChange = model::setBar)
+        }
+        Text("Genişlik", color = Color.White)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(0.75f to "Dar", 1f to "Normal", 1.4f to "Geniş").forEach { (scale, label) ->
+                FilterChip(selected = model.barScale == scale, onClick = { model.saveBarScale(scale) }, label = { Text(label) })
+            }
+        }
+    }
+}
+
+@Composable
+internal fun StudioCard(title: String, content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
     Column(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Card).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -1721,7 +1864,7 @@ private fun StudioCard(title: String, content: @Composable androidx.compose.foun
 }
 
 @Composable
-private fun SongRow(
+internal fun SongRow(
     title: String,
     subtitle: String,
     thumbnail: String?,
@@ -1775,6 +1918,13 @@ private fun SongRow(
             Icon(Icons.Default.PlayArrow, contentDescription = null, tint = palette.accent)
         }
         trailing?.let { Text(it, color = Muted, modifier = Modifier.padding(start = 8.dp)) }
+        val app = LocalAppModel.current
+        if (app != null && id != null) {
+            val known = app.libraryTools.localTracks.find { it.id == id }?.toTrack()
+                ?: app.player.queue.find { it.id == id }
+                ?: Track(id, title, subtitle, thumbnail, 0)
+            TrackActions(app, listOf(known))
+        }
     }
 }
 
@@ -1806,71 +1956,6 @@ private fun SoftIcon(
             scaleY = scale
         },
     ) { content() }
-}
-
-@Composable
-private fun QueuePanel(model: AppModel, modifier: Modifier) {
-    Surface(modifier, color = Panel) {
-        LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            item { Text("Sıradaki", fontWeight = FontWeight.SemiBold, color = Color.White) }
-            itemsIndexed(model.player.queue, key = { index, track -> track.id + index }) { index, track ->
-                val playing = index == model.player.index
-                Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { model.player.jumpTo(index) }.padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Cover(track.thumbnail, Modifier.size(36.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(track.title, color = if (playing) Accent else Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(track.artists, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun LyricsPanel(player: PlaybackController, modifier: Modifier) {
-    val lines = player.lyrics?.lineSequence()?.map { it.trim() }?.filter { it.isNotEmpty() }?.toList().orEmpty()
-    Column(
-        modifier.background(Panel).verticalScroll(rememberScrollState()).padding(24.dp),
-    ) {
-        Text("Şarkı sözleri", color = Muted, style = MaterialTheme.typography.labelMedium)
-        Spacer(Modifier.height(8.dp))
-        Text(player.current?.title ?: "Çalmıyor", color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.headlineSmall)
-        Text(player.current?.artists.orEmpty(), color = Muted)
-        Spacer(Modifier.height(20.dp))
-        if (lines.isEmpty()) {
-            Text(if (player.lyrics == null) "Söz yükleniyor" else "Söz yok", color = Muted)
-        } else {
-            lines.forEach { line ->
-                Text(line, color = Color.White.copy(alpha = 0.88f), style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(vertical = 6.dp))
-            }
-        }
-    }
-}
-
-@Composable
-private fun UpdateNotice(model: AppModel) {
-    val updates = model.updates
-    val pending = updates.pending ?: return
-    Row(
-        Modifier.fillMaxWidth().background(Accent).padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text("Yeni sürüm $pending hazır", color = Color.White, modifier = Modifier.weight(1f), fontWeight = FontWeight.Medium)
-        if (updates.downloading) {
-            Text("%${(updates.progress * 100).toInt()}", color = Color.White)
-        } else {
-            Button(
-                onClick = { updates.install { model.player.stop(); exitProcess(0) } },
-                colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black),
-            ) { Text("Güncelle") }
-            TextButton(onClick = updates::dismiss) { Text("Sonra", color = Color.White) }
-        }
-    }
 }
 
 @Composable
