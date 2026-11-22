@@ -22,7 +22,7 @@ dependencies {
     implementation("io.coil-kt.coil3:coil-compose:3.2.0")
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.2.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("org.bytedeco:javacv:1.5.11")
+    implementation("org.bytedeco:javacv:1.5.14")
     implementation("org.bytedeco:ffmpeg:7.1-1.5.11:windows-x86_64")
     testImplementation(kotlin("test"))
 }
