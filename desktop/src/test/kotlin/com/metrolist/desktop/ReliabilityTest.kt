@@ -172,6 +172,13 @@ class ReliabilityTest {
         assertNull(paletteScore("gece gündüz", "Gece", "X"))
     }
 
+    @Test fun skippingAStuckSyncNeverTakesAnotherAccountsWork() {
+        val other = SyncAction("like", value = "a", account = "other")
+        val mine = SyncAction("rename", "list", value = "Yeni", account = "mine")
+        assertNull(firstOwnAction(listOf(other), "mine"))
+        assertEquals(mine, firstOwnAction(listOf(other, mine), "mine"))
+    }
+
     @Test fun repeatedSongsGetDistinctStableKeys() {
         assertEquals(listOf("a#1", "b#1", "a#2"), occurrenceKeys(listOf("a", "b", "a")) { it })
     }

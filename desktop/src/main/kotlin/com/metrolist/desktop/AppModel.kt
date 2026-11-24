@@ -151,7 +151,10 @@ class AppModel {
     private var loadGeneration by mutableIntStateOf(0)
     private var suggestJob: Job? = null
     private var searchJob: Job? = null
-    private var pagingJob: Job? = null
+    // One paging job per list, so a slow page in one place never holds up another.
+    private var searchPaging: Job? = null
+    private var libraryPaging: Job? = null
+    private val playlistPaging = HashMap<Dest.Playlist, Job>()
     private var chromeJob: Job? = null
     private var homeAt = 0L
     private var exploreAt = 0L
@@ -273,19 +276,21 @@ class AppModel {
         query = text
         suggestJob?.cancel()
         suggestions = emptyList()
-        searchJob?.cancel(); pagingJob?.cancel()
+        searchJob?.cancel(); searchPaging?.cancel()
         // Takes over the loading indicator from any page that is still arriving.
         val generation = ++loadGeneration
         loading = true
         val filter = searchFilter
         searchJob = scope.launch {
             val result = withContext(Dispatchers.IO) { YouTube.search(text, filter) }
-            if (generation == loadGeneration) loading = false
+            // The results belong to the search page; the shared error line only while nothing else was opened.
+            val stillShown = generation == loadGeneration
+            if (stillShown) loading = false
             result.onSuccess {
                 searchItems = it.items
                 searchContinuation = it.continuation
-                error = null
-            }.onFailure { error = friendlyError(it) }
+                if (stillShown) error = null
+            }.onFailure { if (stillShown) error = friendlyError(it) }
         }
     }
 
@@ -305,8 +310,8 @@ class AppModel {
 
     fun loadMoreSearch() {
         val token = searchContinuation ?: return
-        if (pagingJob?.isActive == true) return
-        pagingJob = scope.launch {
+        if (searchPaging?.isActive == true) return
+        searchPaging = scope.launch {
             val result = withContext(Dispatchers.IO) { YouTube.searchContinuation(token) }
             result.onSuccess {
                 searchItems = (searchItems + it.items).distinctBy { item -> item.id }
@@ -330,8 +335,9 @@ class AppModel {
 
     fun loadMorePlaylist(dest: Dest.Playlist) {
         val token = (pages[dest] as? PlaylistState)?.continuation ?: return
-        if (pagingJob?.isActive == true) return
-        pagingJob = scope.launch {
+        if (playlistPaging[dest]?.isActive == true) return
+        playlistPaging.values.removeAll { !it.isActive }
+        playlistPaging[dest] = scope.launch {
             val result = withContext(Dispatchers.IO) { YouTube.playlistContinuation(token) }
             val shown = pages[dest] as? PlaylistState ?: return@launch
             result.onSuccess { next ->
@@ -343,15 +349,16 @@ class AppModel {
     fun selectLibrary(tab: LibraryTab) {
         if (tab == libraryTab) return
         libraryTab = tab
+        libraryPaging?.cancel()
         libraryItems = emptyList(); libraryContinuation = null
         refresh()
     }
 
     fun loadMoreLibrary() {
         val token = libraryContinuation ?: return
-        if (pagingJob?.isActive == true) return
+        if (libraryPaging?.isActive == true) return
         val tab = libraryTab
-        pagingJob = scope.launch {
+        libraryPaging = scope.launch {
             val result = withContext(Dispatchers.IO) { YouTube.libraryContinuation(token) }
             if (tab != libraryTab) return@launch
             result.onSuccess { page ->

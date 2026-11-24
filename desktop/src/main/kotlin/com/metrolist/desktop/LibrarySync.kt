@@ -22,6 +22,9 @@ data class SyncAction(
 internal fun accountFingerprint(cookie: String): String = MessageDigest.getInstance("SHA-256")
     .digest(cookie.toByteArray()).joinToString("") { "%02x".format(it) }
 
+/** The first waiting action of this account; actions of other accounts are never touched from here. */
+internal fun firstOwnAction(pending: List<SyncAction>, account: String): SyncAction? = pending.firstOrNull { it.account == account }
+
 /** Actions survive restart and stop at the first failure to preserve edit order. */
 internal class LibrarySync(private val store: Store) {
     private val mutex = Mutex()

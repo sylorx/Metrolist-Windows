@@ -80,12 +80,16 @@ class LibraryTools(private val model: AppModel) {
     fun skipFirstSync() {
         if (syncing) return
         val account = accountFingerprint(store.settings.cookie)
-        val first = store.pendingSync.firstOrNull { it.account == account } ?: store.pendingSync.firstOrNull() ?: return
+        // Another account's work waits for that account; skipping only ever drops this account's stuck action.
+        val first = firstOwnAction(store.pendingSync, account) ?: return
         store.completeSync(first.id)
         pendingCount = store.pendingSync.size
         syncMessage = null
         retrySync()
     }
+    /** True when this account has a waiting action that the skip button could remove. */
+    val canSkip: Boolean get() = store.settings.cookie.isNotBlank() &&
+        firstOwnAction(store.pendingSync, accountFingerprint(store.settings.cookie)) != null
     fun unlike(tracks: List<SavedTrack>) {
         store.unlike(tracks.map { it.id }.toSet())
         tracks.filter { it.localPath == null }.forEach { queueSync(SyncAction("like", value = it.id, enabled = false)) }

@@ -105,7 +105,7 @@ internal fun DataSettings(model: AppModel) {
         Text("Hesap açıkken yapılan yeni liste ve beğeni değişiklikleri sırayla gönderilir. Başarısız işlemler sonraki deneme için saklanır. Yerel müzik dosyaları YouTube’a yüklenmez.", color = Muted)
         Row {
             TextButton(onClick = tools::retrySync, enabled = !tools.syncing) { Text("Yeniden dene") }
-            if (tools.pendingCount > 0 && tools.syncMessage != null) {
+            if (tools.pendingCount > 0 && tools.syncMessage != null && tools.canSkip) {
                 TextButton(onClick = tools::skipFirstSync, enabled = !tools.syncing) { Text("Takılan ilk işlemi atla") }
             }
         }
