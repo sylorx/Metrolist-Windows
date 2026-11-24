@@ -16,12 +16,26 @@ internal fun atomicWrite(file: File, text: String, backup: Boolean = true) {
             stream.fd.sync()
         }
         if (backup && file.exists()) Files.copy(file.toPath(), File(file.path + ".bak").toPath(), StandardCopyOption.REPLACE_EXISTING)
-        try {
-            Files.move(temporary.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-        } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
-            Files.move(temporary.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
-        }
+        replaceFile(temporary, file)
     } finally { temporary.delete() }
+}
+
+/** Antivirus and indexing services briefly hold new files open on Windows; a short wait is enough. */
+private fun replaceFile(source: File, target: File) {
+    var attempt = 0
+    while (true) {
+        try {
+            try {
+                Files.move(source.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+                Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
+            return
+        } catch (busy: java.nio.file.FileSystemException) {
+            if (++attempt >= 5) throw busy
+            Thread.sleep(30L * attempt)
+        }
+    }
 }
 
 class Store(private val directory: File = appDir(), private val protectCookie: Boolean = true) {
@@ -59,6 +73,7 @@ class Store(private val directory: File = appDir(), private val protectCookie: B
     }
 
     @Synchronized fun savePlayback(value: PlaybackMemory) {
+        if (value == playback) return
         atomicWrite(file("playback"), json.encodeToString(value))
         playback = value
     }
@@ -91,6 +106,10 @@ class Store(private val directory: File = appDir(), private val protectCookie: B
         val exists = library.liked.any { it.id == track.id }
         saveLibrary(library.copy(liked = if (exists) library.liked.filterNot { it.id == track.id } else listOf(track) + library.liked))
         return !exists
+    }
+
+    @Synchronized fun unlike(ids: Set<String>) {
+        saveLibrary(library.copy(liked = library.liked.filterNot { it.id in ids }))
     }
 
     @Synchronized fun createPlaylist(title: String, tracks: List<SavedTrack> = emptyList()): LocalPlaylist {
@@ -154,6 +173,8 @@ class Store(private val directory: File = appDir(), private val protectCookie: B
         require(backup.version == 1) { "Bu yedek sürümü desteklenmiyor" }
         // Preserve this computer's account, output device and folder configuration.
         val importedSettings = backup.settings.copy(cookie = settings.cookie, musicFolders = settings.musicFolders,
+            windowX = settings.windowX, windowY = settings.windowY, windowWidth = settings.windowWidth,
+            windowHeight = settings.windowHeight, windowMaximized = settings.windowMaximized,
             audio = backup.settings.audio.copy(device = settings.audio.device)).validated()
         val playlists = backup.library.playlists.map { it.copy(remoteId = null, remoteBindings = emptyMap()) }
         val merged = library.copy(liked = (library.liked + backup.library.liked).distinctBy { it.id },

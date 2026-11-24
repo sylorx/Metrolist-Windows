@@ -27,17 +27,23 @@ internal fun TrackActions(model: AppModel, tracks: List<Track>) {
     Box {
         TextButton(onClick = { expanded = true }, enabled = tracks.isNotEmpty(), contentPadding = PaddingValues(4.dp)) { Text("•••") }
         DropdownMenu(expanded, onDismissRequest = { expanded = false }) {
+            val single = tracks.singleOrNull()
             DropdownMenuItem(text = { Text("Sonraki çal") }, onClick = { model.player.enqueue(tracks, next = true); expanded = false; model.status = "Sonraki çalınacak" })
             DropdownMenuItem(text = { Text("Sıranın sonuna ekle") }, onClick = { model.player.enqueue(tracks); expanded = false; model.status = "Sıraya eklendi" })
-            model.localPlaylists.forEach { list ->
-                DropdownMenuItem(text = { Text("Listeye ekle: ${list.title}") }, onClick = {
-                    model.libraryTools.addTracks(list.id, tracks.map { it.toSaved() }); expanded = false
-                })
+            DropdownMenuItem(text = { Text("Listeye ekle…") }, onClick = { expanded = false; model.prepareAdd(tracks) })
+            if (single != null) {
+                DropdownMenuItem(text = { Text(if (model.isLiked(single.id)) "Beğeniyi kaldır" else "Beğen") },
+                    onClick = { model.toggleLike(single); expanded = false })
+                if (single.localPath == null) {
+                    HorizontalDivider()
+                    DropdownMenuItem(text = { Text("Şarkı radyosu başlat") }, onClick = { model.startRadio(single); expanded = false })
+                    DropdownMenuItem(text = { Text("Bağlantıyı kopyala") }, onClick = { model.copyLink(single); expanded = false })
+                    DropdownMenuItem(text = { Text("Radyoda bu şarkıyı çalma") }, onClick = { model.block(single); expanded = false })
+                    if (artistNames(single.artists).isNotEmpty()) {
+                        DropdownMenuItem(text = { Text("Radyoda bu sanatçıyı çalma") }, onClick = { model.blockArtist(single); expanded = false })
+                    }
+                }
             }
-            DropdownMenuItem(text = { Text("Seçimden yeni liste oluştur") }, onClick = {
-                model.libraryTools.createPlaylist("Yeni liste ${model.localPlaylists.size + 1}", tracks.map { it.toSaved() })
-                expanded = false
-            })
         }
     }
 }
@@ -96,13 +102,17 @@ internal fun SavedTracks(
     var draft by remember(title) { mutableStateOf(title) }
     var deleting by remember { mutableStateOf(false) }
     LaunchedEffect(tracks) { selected = selected.intersect(tracks.map { it.id }.toSet()) }
-    val filtered = tracks.filter { query.isBlank() || it.title.contains(query, true) || it.artists.contains(query, true) || it.album.contains(query, true) }
-    val shown = when (sort) {
-        TrackSort.Recent -> filtered
-        TrackSort.Title -> filtered.sortedBy { it.title.lowercase() }
-        TrackSort.Artist -> filtered.sortedBy { it.artists.lowercase() }
-        TrackSort.Duration -> filtered.sortedByDescending { it.durationMs }
+    val shown = remember(tracks, query, sort) {
+        val filtered = if (query.isBlank()) tracks else tracks.filter { it.matches(query) }
+        val order = turkishOrder()
+        when (sort) {
+            TrackSort.Recent -> filtered
+            TrackSort.Title -> filtered.sortedWith { a, b -> order.compare(a.title, b.title) }
+            TrackSort.Artist -> filtered.sortedWith { a, b -> order.compare(a.artists, b.artists) }
+            TrackSort.Duration -> filtered.sortedByDescending { it.durationMs }
+        }
     }
+    val keys = remember(shown) { occurrenceKeys(shown) { it.id } }
     val chosen = shown.filter { it.id in selected }
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -124,30 +134,26 @@ internal fun SavedTracks(
             }
         }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            OutlinedTextField(query, { query = it }, placeholder = { Text("Listede ara") }, singleLine = true, modifier = Modifier.width(230.dp))
+            OutlinedTextField(query, { query = it }, placeholder = { Text("Listede ara") }, singleLine = true, modifier = Modifier.width(230.dp).keepTyping())
             TrackSort.entries.forEach { choice -> FilterChip(sort == choice, { sort = choice }, label = { Text(choice.label) }) }
         }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            TextButton(onClick = { selected = if (chosen.size == shown.size) emptySet() else shown.map { it.id }.toSet() }) { Text("${chosen.size} seçili · Tümünü seç/kaldır") }
+            TextButton(onClick = { selected = if (chosen.size == shown.size) selected - shown.map { it.id }.toSet() else selected + shown.map { it.id } }) { Text("${chosen.size} seçili · Tümünü seç/kaldır") }
             if (chosen.isNotEmpty()) {
                 TextButton(onClick = { model.player.enqueue(chosen.map { it.toTrack() }) }) { Text("Sıraya ekle") }
                 TrackActions(model, chosen.map { it.toTrack() })
-                if (playlistId != null) TextButton(onClick = { model.libraryTools.removeTracks(playlistId, selected); selected = emptySet() }) { Text("Listeden çıkar") }
+                if (playlistId != null) TextButton(onClick = { model.libraryTools.removeTracks(playlistId, chosen.map { it.id }.toSet()); selected = emptySet() }) { Text("Listeden çıkar") }
                 if (heart) TextButton(onClick = {
-                    chosen.forEach { track ->
-                        model.store.toggleLike(track)
-                        if (track.localPath == null) model.libraryTools.queueSync(SyncAction("like", value = track.id, enabled = false))
-                    }
-                    model.libraryTools.changed(); selected = emptySet()
+                    model.libraryTools.unlike(chosen); selected = emptySet()
                 }) { Text("Beğeniyi kaldır") }
             }
         }
         if (shown.isEmpty()) Text(if (tracks.isEmpty()) empty else "Aramana uyan parça yok.", color = Muted)
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            itemsIndexed(shown) { at, track ->
+            itemsIndexed(shown, key = { at, _ -> keys[at] }) { at, track ->
                 val active = model.player.current?.id == track.id
                 val reorder = playlistId != null && sort == TrackSort.Recent && query.isBlank()
-                Row(Modifier.fillMaxWidth().background(if (active) Accent.copy(alpha = 0.12f) else Panel, RoundedCornerShape(8.dp)).padding(horizontal = 6.dp),
+                Row(Modifier.animateItem(fadeInSpec = null, fadeOutSpec = null).appear(at).fillMaxWidth().background(if (active) Accent.copy(alpha = 0.12f) else Panel, RoundedCornerShape(8.dp)).padding(horizontal = 6.dp),
                     verticalAlignment = Alignment.CenterVertically) {
                     if (reorder) DragHandle(at, shown.size) { from, to -> model.libraryTools.reorder(playlistId!!, from, to) }
                     Checkbox(track.id in selected, { selected = if (it) selected + track.id else selected - track.id })
@@ -157,6 +163,10 @@ internal fun SavedTracks(
                         Column(Modifier.weight(1f)) {
                             Text(track.title, color = if (active) Accent else Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text(track.artists + if (track.album.isBlank()) "" else " · ${track.album}", color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        if (active) {
+                            EqualizerBars(model.player.isPlaying, Accent)
+                            Spacer(Modifier.width(10.dp))
                         }
                         Text(if (track.durationMs > 0) formatTime(track.durationMs) else "—:—", color = Muted)
                     }
@@ -170,7 +180,7 @@ internal fun SavedTracks(
         }
     }
     if (rename) AlertDialog(onDismissRequest = { rename = false }, title = { Text("Liste adı") },
-        text = { OutlinedTextField(draft, { draft = it }, singleLine = true) },
+        text = { OutlinedTextField(draft, { draft = it }, singleLine = true, modifier = Modifier.keepTyping()) },
         confirmButton = { TextButton(onClick = { model.libraryTools.rename(playlistId!!, draft); rename = false }, enabled = draft.isNotBlank()) { Text("Kaydet") } },
         dismissButton = { TextButton(onClick = { rename = false }) { Text("Vazgeç") } })
     if (deleting) AlertDialog(onDismissRequest = { deleting = false }, title = { Text("Liste silinsin mi?") }, text = { Text(title) },

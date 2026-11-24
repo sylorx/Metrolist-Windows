@@ -5,6 +5,7 @@ import org.bytedeco.javacv.Frame
 import java.nio.ByteBuffer
 import java.nio.FloatBuffer
 import java.nio.ShortBuffer
+import java.util.concurrent.atomic.AtomicLong
 import javax.sound.sampled.AudioFormat
 import javax.sound.sampled.AudioSystem
 import javax.sound.sampled.FloatControl
@@ -26,6 +27,8 @@ class FfmpegPlayer(
     private val gate = Any()
     @Volatile private var generation = 0
     @Volatile private var paused = false
+    @Volatile private var released = false
+    private val pendingSeek = AtomicLong(NO_SEEK)
     private val pauseLock = Object()
     @Volatile private var line: SourceDataLine? = null
     private var thread: Thread? = null
@@ -34,6 +37,7 @@ class FfmpegPlayer(
         val gen: Int
         val worker: Thread?
         synchronized(gate) {
+            if (released) return
             gen = ++generation
             paused = false
             synchronized(pauseLock) { pauseLock.notifyAll() }
@@ -41,7 +45,8 @@ class FfmpegPlayer(
         }
         if (worker != null && worker != Thread.currentThread()) worker.join(1200)
         synchronized(gate) {
-            if (gen != generation) return
+            if (released || gen != generation) return
+            pendingSeek.set(NO_SEEK)
             durationMs = duration
             positionMs = startMs
             paused = startPaused
@@ -80,9 +85,22 @@ class FfmpegPlayer(
         synchronized(pauseLock) { pauseLock.notifyAll() }
     }
 
+    override fun seek(ms: Long): Boolean {
+        synchronized(gate) {
+            if (released || !ready || thread?.isAlive != true) return false
+            positionMs = ms
+            pendingSeek.set(ms)
+        }
+        // Unblocks a full buffer and drops audio from the old position.
+        runCatching { line?.flush() }
+        synchronized(pauseLock) { pauseLock.notifyAll() }
+        return true
+    }
+
     override fun stop() {
         val worker: Thread?
         synchronized(gate) {
+            released = true
             generation++
             paused = false
             synchronized(pauseLock) { pauseLock.notifyAll() }
@@ -98,7 +116,7 @@ class FfmpegPlayer(
 
     private fun waitIfPaused(gen: Int) {
         synchronized(pauseLock) {
-            while (paused && gen == generation) pauseLock.wait(200)
+            while (paused && gen == generation && pendingSeek.get() == NO_SEEK) pauseLock.wait(200)
         }
     }
 
@@ -108,7 +126,7 @@ class FfmpegPlayer(
         var pcm = ByteArray(8192)
         var processor: AudioProcessor? = null
         try {
-            configureStreamInput(opened, headers)
+            if (url.startsWith("http", ignoreCase = true)) configureStreamInput(opened, headers)
             opened.setAudioOption("threads", "1")
             // A single interleaved layout makes PCM processing correct for every source format.
             opened.sampleFormat = 1 // AV_SAMPLE_FMT_S16
@@ -120,10 +138,18 @@ class FfmpegPlayer(
             if (startMs > 0) opened.timestamp = startMs * 1000
             val startedAt = System.currentTimeMillis()
             var heard = false
+            var seeked = startMs > 0
             var misses = 0
             while (gen == generation) {
                 if (audioLine != null) waitIfPaused(gen)
                 if (gen != generation) break
+                val target = pendingSeek.getAndSet(NO_SEEK)
+                if (target != NO_SEEK) {
+                    opened.timestamp = target * 1000
+                    audioLine?.flush()
+                    seeked = true
+                    continue
+                }
                 val frame = opened.grab() ?: break
                 if (frame.samples == null) {
                     if (!heard && ++misses > 90) break
@@ -137,13 +163,16 @@ class FfmpegPlayer(
                 }
                 waitIfPaused(gen)
                 if (gen != generation) break
+                if (pendingSeek.get() != NO_SEEK) continue
                 val written = copyPcm(frame, pcm) { grown -> pcm = grown }
                 if (written > 0) {
                     heard = true
                     processor?.process(pcm, written, audio, volume * envelope)
                     audioLine.write(pcm, 0, written)
                 }
-                positionMs = (opened.timestamp / 1000).coerceAtLeast(0)
+                val decodedMs = (opened.timestamp / 1000).coerceAtLeast(0)
+                // A seek requested while this frame was being written owns the position.
+                synchronized(gate) { if (gen == generation && pendingSeek.get() == NO_SEEK) positionMs = decodedMs }
                 if (durationMs <= 0 && opened.lengthInTime > 0) durationMs = opened.lengthInTime / 1000
             }
             if (gen == generation && !heard) throw IllegalStateException("Ses akışı boş")
@@ -152,7 +181,9 @@ class FfmpegPlayer(
             }
             if (gen == generation) audioLine?.drain()
             val wall = System.currentTimeMillis() - startedAt
-            if (gen == generation && wall < 4_000 && positionMs < 1_500) {
+            // A genuinely short clip or a seek to the end also finishes quickly; neither is a failure.
+            val short = durationMs in 1..4_000
+            if (gen == generation && !seeked && !short && wall < 4_000 && positionMs < 1_500) {
                 throw IllegalStateException("Akış erken kapandı")
             }
         } finally {
@@ -176,7 +207,10 @@ class FfmpegPlayer(
         opened.setOption("reconnect", "1")
         opened.setOption("reconnect_streamed", "1")
         opened.setOption("reconnect_delay_max", "2")
-        opened.setOption("rw_timeout", "15000000")
+        opened.setOption("rw_timeout", "9000000")
+        // Audio formats are recognised from the first bytes; the 5 MB default keeps slow servers silent for seconds.
+        opened.setOption("probesize", "262144")
+        opened.setOption("analyzeduration", "1000000")
     }
 
     private fun openLine(frame: Frame): SourceDataLine {
@@ -240,6 +274,7 @@ class FfmpegPlayer(
     }
 
     private companion object {
+        const val NO_SEEK = -1L
         val HEADER_NAME = Regex("^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
         const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }

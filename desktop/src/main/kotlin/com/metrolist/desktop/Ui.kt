@@ -1,5 +1,40 @@
 package com.metrolist.desktop
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.basicMarquee
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Lyrics
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.onPointerEvent
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
+import com.metrolist.innertube.pages.AlbumPage
+import com.metrolist.innertube.pages.ArtistPage
+import com.metrolist.innertube.pages.BrowseResult
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -40,6 +75,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredWidth
@@ -55,17 +91,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LibraryMusic
-import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.PlaylistAdd
-import androidx.compose.material.icons.filled.QueueMusic
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.Search
@@ -73,8 +107,8 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
-import androidx.compose.material.icons.filled.VolumeOff
-import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
@@ -90,7 +124,6 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
-import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -114,13 +147,6 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.isCtrlPressed
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onKeyEvent
-import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -133,7 +159,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import kotlin.system.exitProcess
 import coil3.compose.AsyncImage
 import com.metrolist.innertube.YouTube
 import com.metrolist.innertube.models.ArtistItem
@@ -179,10 +204,10 @@ internal fun MetrolistTheme(look: Look, content: @Composable () -> Unit) {
 fun MetrolistApp(model: AppModel) {
     val player = model.player
     LaunchedEffect(Unit) {
-        model.openRail(Dest.Home)
+        if (model.home == null) model.openRail(Dest.Home)
+        // Discord and the tray tooltip follow the song; playback itself advances in the model.
         while (true) {
-            kotlinx.coroutines.delay(300)
-            model.player.poll()
+            kotlinx.coroutines.delay(1_000)
             model.syncDiscord()
             val playing = model.player.current
             AppTray.hint(playing?.title.orEmpty(), playing?.artists.orEmpty())
@@ -190,120 +215,95 @@ fun MetrolistApp(model: AppModel) {
     }
     LaunchedEffect(model.status) {
         val message = model.status ?: return@LaunchedEffect
-        kotlinx.coroutines.delay(2_200)
+        kotlinx.coroutines.delay((1_800L + message.length * 28L).coerceAtMost(6_000))
         if (model.status == message) model.status = null
     }
 
     val playingId = model.player.current?.id
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(Ink)
-            .onPreviewKeyEvent { event ->
-                if (event.type == KeyEventType.KeyDown && event.isCtrlPressed && event.key == Key.K) {
-                    model.quickOpen = !model.quickOpen
-                    true
-                } else false
-            }
-            .onKeyEvent { event ->
-                if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
-                val player = model.player
-                when {
-                    event.key == Key.Spacebar -> {
-                        player.toggle()
-                        true
-                    }
-                    event.isCtrlPressed && event.key == Key.DirectionRight -> {
-                        player.next()
-                        true
-                    }
-                    event.isCtrlPressed && event.key == Key.DirectionLeft -> {
-                        player.previous()
-                        true
-                    }
-                    event.isCtrlPressed && event.key == Key.DirectionUp -> {
-                        player.changeVolume(player.volume + 0.05f)
-                        true
-                    }
-                    event.isCtrlPressed && event.key == Key.DirectionDown -> {
-                        player.changeVolume(player.volume - 0.05f)
-                        true
-                    }
-                    event.isCtrlPressed && event.key == Key.M -> {
-                        player.toggleMute()
-                        true
-                    }
-                    else -> false
-                }
-            },
-    ) {
-        Row(Modifier.weight(1f).fillMaxWidth()) {
-            Rail(model)
-            Column(Modifier.weight(1f).fillMaxHeight()) {
-                TopBar(model)
-                CompositionLocalProvider(LocalPlayingId provides playingId, LocalAppModel provides model) {
+    CompositionLocalProvider(LocalMotion provides model.motion, LocalPlayingId provides playingId, LocalAppModel provides model) {
+    Box(Modifier.fillMaxSize().background(Ink)) {
+    Column(Modifier.fillMaxSize()) {
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            Row(Modifier.fillMaxSize()) {
+                Rail(model)
+                Column(Modifier.weight(1f).fillMaxHeight()) {
+                    TopBar(model)
                     Content(model, Modifier.fillMaxSize())
                 }
+                AnimatedVisibility(
+                    visible = player.showLyrics && !model.showNowPlaying,
+                    enter = fadeIn(tween(240)) + expandHorizontally(tween(320)),
+                    exit = fadeOut(tween(160)) + shrinkHorizontally(tween(240)),
+                ) {
+                    LyricsPanel(player, Modifier.width(380.dp).fillMaxHeight())
+                }
+                AnimatedVisibility(
+                    visible = player.showQueue && !model.showNowPlaying,
+                    enter = fadeIn(tween(240)) + expandHorizontally(tween(320)),
+                    exit = fadeOut(tween(160)) + shrinkHorizontally(tween(240)),
+                ) {
+                    QueuePanel(model, Modifier.width(360.dp).fillMaxHeight())
+                }
             }
-            AnimatedVisibility(
-                visible = player.showLyrics,
-                enter = fadeIn(tween(240)) + expandHorizontally(tween(320)),
-                exit = fadeOut(tween(160)) + shrinkHorizontally(tween(240)),
+            androidx.compose.animation.AnimatedVisibility(
+                visible = model.showNowPlaying,
+                enter = slideInVertically(tween(420, easing = FastOutSlowInEasing)) { it } + fadeIn(tween(240)),
+                exit = slideOutVertically(tween(320, easing = FastOutSlowInEasing)) { it } + fadeOut(tween(260)),
             ) {
-                LyricsPanel(player, Modifier.width(380.dp).fillMaxHeight())
+                NowPlayingScreen(model, Modifier.fillMaxSize())
             }
-            AnimatedVisibility(
-                visible = player.showQueue,
-                enter = fadeIn(tween(240)) + expandHorizontally(tween(320)),
-                exit = fadeOut(tween(160)) + shrinkHorizontally(tween(240)),
-            ) {
-                QueuePanel(model, Modifier.width(360.dp).fillMaxHeight())
-            }
+            StatusToast(model, Modifier.align(Alignment.BottomCenter).padding(bottom = 18.dp))
         }
-        if (model.status != null || player.error != null || player.sleepDeadline != null || player.sleepAfterTrack) {
+        if (player.error != null || player.sleepDeadline != null || player.sleepAfterTrack) {
             Row(Modifier.fillMaxWidth().background(Panel).padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(player.error ?: model.status ?: if (player.sleepAfterTrack) "Uyku: parça sonunda duracak" else "Uyku: ${formatTime(player.sleepRemainingMs)}",
-                    color = Muted, modifier = Modifier.weight(1f), maxLines = 2)
-                if (player.error != null) TextButton(onClick = player::retry) { Text("Yeniden dene") }
+                Text(player.error ?: if (player.sleepAfterTrack) "Uyku: parça sonunda duracak" else "Uyku: ${formatTime(player.sleepRemainingMs)}",
+                    color = if (player.error != null) Accent else Muted, modifier = Modifier.weight(1f), maxLines = 2)
+                if (player.error != null) {
+                    TextButton(onClick = { model.open(Dest.Diagnostics) }) { Text("Neden?") }
+                    TextButton(onClick = player::retry) { Text("Yeniden dene") }
+                }
                 if (player.sleepDeadline != null || player.sleepAfterTrack) TextButton(onClick = { player.setSleep() }) { Text("Zamanlayıcıyı iptal et") }
             }
         }
         UpdateNotice(model)
         PlayerBar(model)
     }
+    CommandPalette(model)
+    }
+    }
 
-    if (model.quickOpen) QuickOpenDialog(model)
     if (model.showAdd) {
         AlertDialog(
             onDismissRequest = { model.showAdd = false },
-            title = { Text("Listeye ekle") },
+            title = { Text(if (model.addTargets.size == 1) "“${model.addTargets.single().title}” ekle" else "${model.addTargets.size} şarkıyı ekle", maxLines = 2) },
             text = {
-                LazyColumn(Modifier.height(240.dp)) {
+                LazyColumn(Modifier.heightIn(max = 280.dp)) {
                     items(model.localPlaylists, key = { it.id }) { playlist ->
                         Text(
                             playlist.title,
                             color = Color.White,
-                            modifier = Modifier.fillMaxWidth().clickable { model.addCurrentTo(playlist.id) }.padding(10.dp),
+                            modifier = Modifier.fillMaxWidth().clickable { model.addTargetsTo(playlist.id) }.padding(10.dp),
                         )
                     }
                     items(model.playlistsForAdd, key = { it.id }) { playlist ->
                         Text(
                             "${playlist.title} · YouTube",
                             color = Color.White,
-                            modifier = Modifier.fillMaxWidth().clickable { model.addCurrentTo(playlist.id) }.padding(10.dp),
+                            modifier = Modifier.fillMaxWidth().clickable { model.addTargetsTo(playlist.id) }.padding(10.dp),
                         )
                     }
                     if (model.localPlaylists.isEmpty() && model.playlistsForAdd.isEmpty()) {
-                        item { Text("Kayıtlı liste yok. Kitaplık’tan oluştur.", color = Muted) }
+                        item { Text("Kayıtlı liste yok. “Yeni liste” ile oluştur.", color = Muted) }
                     }
                 }
             },
-            confirmButton = { TextButton(onClick = { model.showAdd = false }) { Text("Kapat") } },
+            confirmButton = { TextButton(onClick = model::createForTargets) { Text("Yeni liste") } },
+            dismissButton = { TextButton(onClick = { model.showAdd = false }) { Text("Kapat") } },
         )
     }
     if (model.showCreate) {
         AlertDialog(
-            onDismissRequest = { model.showCreate = false },
+            onDismissRequest = model::cancelCreate,
             title = { Text("Yeni çalma listesi") },
             text = {
                 OutlinedTextField(
@@ -311,11 +311,13 @@ fun MetrolistApp(model: AppModel) {
                     onValueChange = { model.newPlaylistTitle = it },
                     placeholder = { Text("Yeni liste adı") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { model.createPlaylist() }),
+                    modifier = Modifier.fillMaxWidth().keepTyping(),
                 )
             },
             confirmButton = { Button(onClick = model::createPlaylist) { Text("Oluştur") } },
-            dismissButton = { TextButton(onClick = { model.showCreate = false }) { Text("Vazgeç") } },
+            dismissButton = { TextButton(onClick = model::cancelCreate) { Text("Vazgeç") } },
         )
     }
 }
@@ -349,11 +351,11 @@ private fun Rail(model: AppModel) {
         NavRow("Beğenilenler", Icons.Default.Favorite, model.current is Dest.Liked, "icons/heart.png", plain = true) { model.openRail(Dest.Liked) }
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             items(SmartRule.entries) { rule ->
-                NavRow(rule.title, Icons.Default.QueueMusic, (model.current as? Dest.Smart)?.rule == rule) { model.openRail(Dest.Smart(rule)) }
+                NavRow(rule.title, Icons.AutoMirrored.Filled.QueueMusic, (model.current as? Dest.Smart)?.rule == rule) { model.openRail(Dest.Smart(rule)) }
             }
             items(model.localPlaylists, key = { it.id }) { playlist ->
                 val open = (model.current as? Dest.LocalList)?.id == playlist.id
-                NavRow(playlist.title, Icons.Default.QueueMusic, open, "icons/playlist.jpg") { model.openLocal(playlist.id) }
+                NavRow(playlist.title, Icons.AutoMirrored.Filled.QueueMusic, open, "icons/playlist.jpg") { model.openLocal(playlist.id) }
             }
         }
         Surface(
@@ -374,28 +376,74 @@ private fun Rail(model: AppModel) {
 
 @Composable
 private fun TopBar(model: AppModel) {
+    val focus = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    var focused by remember { mutableStateOf(false) }
+    LaunchedEffect(model.focusSearch) { if (model.focusSearch > 0) focus.requestFocus() }
+    fun go(text: String) {
+        model.query = text
+        model.submitSearch()
+        focusManager.clearFocus()
+    }
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         SoftIcon(onClick = model::back, enabled = model.stack.size > 1) {
-            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Geri", tint = Color.White)
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Geri", tint = if (model.stack.size > 1) Color.White else Muted.copy(alpha = 0.4f))
         }
-        OutlinedTextField(
-            value = model.query,
-            onValueChange = model::suggest,
-            modifier = Modifier.weight(1f),
-            placeholder = { Text("Ne dinlemek istersin?") },
-            singleLine = true,
-            shape = RoundedCornerShape(24.dp),
-            leadingIcon = {
-                Icon(Icons.Default.Search, contentDescription = "Ara", modifier = Modifier.clickable { model.submitSearch() })
-            },
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions = KeyboardActions(onSearch = { model.submitSearch() }),
-        )
-        TextButton(onClick = { model.quickOpen = true }) { Text("Ctrl+K") }
+        Box(Modifier.weight(1f)) {
+            OutlinedTextField(
+                value = model.query,
+                onValueChange = model::suggest,
+                modifier = Modifier.fillMaxWidth().focusRequester(focus).onFocusChanged { focused = it.isFocused }.keepTyping(),
+                placeholder = { Text("Ne dinlemek istersin?") },
+                singleLine = true,
+                shape = RoundedCornerShape(24.dp),
+                leadingIcon = {
+                    Icon(Icons.Default.Search, contentDescription = "Ara", modifier = Modifier.clickable { model.submitSearch() })
+                },
+                trailingIcon = {
+                    if (model.query.isNotEmpty()) {
+                        IconButton(onClick = { model.suggest("") }) { Icon(Icons.Default.Close, contentDescription = "Temizle", tint = Muted) }
+                    } else {
+                        Text("Ctrl K", color = Muted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.clickable { model.showPalette = true }.padding(10.dp))
+                    }
+                },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { model.submitSearch(); focusManager.clearFocus() }),
+            )
+            if (focused && model.suggestions.isNotEmpty()) {
+                Popup(
+                    popupPositionProvider = BelowAnchor,
+                    onDismissRequest = { model.suggestions = emptyList() },
+                    properties = PopupProperties(focusable = false),
+                ) {
+                    Column(
+                        Modifier.padding(top = 6.dp).width(480.dp).shadow(18.dp, RoundedCornerShape(14.dp))
+                            .clip(RoundedCornerShape(14.dp)).background(Card).padding(6.dp),
+                    ) {
+                        model.suggestions.forEachIndexed { at, suggestion ->
+                            Row(
+                                Modifier.appear(at).fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { go(suggestion) }
+                                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(Icons.Default.Search, contentDescription = null, tint = Muted, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(12.dp))
+                                Text(suggestion, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
+}
+
+private object BelowAnchor : PopupPositionProvider {
+    override fun calculatePosition(anchorBounds: IntRect, windowSize: IntSize, layoutDirection: LayoutDirection, popupContentSize: IntSize) =
+        IntOffset(anchorBounds.left, anchorBounds.bottom)
 }
 
 @Composable
@@ -475,43 +523,52 @@ private fun NavRow(label: String, icon: ImageVector, selected: Boolean, art: Str
 
 @Composable
 private fun Content(model: AppModel, modifier: Modifier) {
+    // Remembers each page's scroll position, so going back lands where the user left.
+    val pageStates = rememberSaveableStateHolder()
+    val motion = LocalMotion.current
     Box(modifier.padding(horizontal = 22.dp, vertical = 6.dp)) {
         AnimatedContent(
             targetState = model.current,
             modifier = Modifier.fillMaxSize(),
             transitionSpec = {
-                (fadeIn(tween(280)) + slideInVertically(tween(340)) { it / 16 }) togetherWith
-                    (fadeOut(tween(180)) + slideOutVertically(tween(220)) { it / 22 })
+                if (!motion) return@AnimatedContent fadeIn(tween(0)) togetherWith fadeOut(tween(0))
+                val way = if (model.forward) 1 else -1
+                (fadeIn(tween(260, delayMillis = 40)) + slideInHorizontally(tween(340, easing = FastOutSlowInEasing)) { way * it / 14 }) togetherWith
+                    (fadeOut(tween(150)) + slideOutHorizontally(tween(240, easing = FastOutSlowInEasing)) { -way * it / 22 })
             },
             label = "sayfa",
         ) { dest ->
-            when (dest) {
-                Dest.Home -> HomeScreen(model)
-                Dest.Search -> SearchScreen(model)
-                Dest.Library -> LibraryScreen(model)
-                Dest.History -> HistoryScreen(model)
-                Dest.Explore -> ExploreScreen(model)
-                Dest.Settings -> SettingsScreen(model)
-                Dest.Liked -> SavedTracks(model, "Beğenilen şarkılar", model.liked, "Beğendiğin şarkılar bu bilgisayarda durur.", heart = true)
-                Dest.Shortcuts -> ShortcutsScreen(model)
-                Dest.LocalMusic -> LocalMusicScreen(model)
-                Dest.Insights -> InsightsScreen(model)
-                Dest.Personal -> CompositionLocalProvider(androidx.compose.material3.LocalContentColor provides Color.White) { PersonalLibraryScreen(model) }
-                is Dest.Smart -> SmartScreen(model, dest.rule)
-                is Dest.LocalList -> LocalListScreen(model, dest.id)
-                is Dest.Album -> AlbumScreen(model)
-                is Dest.Artist -> ArtistScreen(model)
-                is Dest.Playlist -> PlaylistScreen(model)
-                is Dest.Collection -> CollectionScreen(model, dest.title)
+            pageStates.SaveableStateProvider(dest.toString()) {
+                when (dest) {
+                    Dest.Home -> HomeScreen(model)
+                    Dest.Search -> SearchScreen(model)
+                    Dest.Library -> LibraryScreen(model)
+                    Dest.History -> HistoryScreen(model)
+                    Dest.Explore -> ExploreScreen(model)
+                    Dest.Settings -> SettingsScreen(model)
+                    Dest.Liked -> SavedTracks(model, "Beğenilen şarkılar", model.liked, "Beğendiğin şarkılar bu bilgisayarda durur.", heart = true)
+                    Dest.Shortcuts -> ShortcutsScreen(model)
+                    Dest.LocalMusic -> LocalMusicScreen(model)
+                    Dest.Insights -> InsightsScreen(model)
+                    Dest.Personal -> CompositionLocalProvider(androidx.compose.material3.LocalContentColor provides Color.White) { PersonalLibraryScreen(model) }
+                    Dest.Diagnostics -> DiagnosticsScreen(model)
+                    Dest.Blocked -> BlockedScreen(model)
+                    is Dest.Smart -> SmartScreen(model, dest.rule)
+                    is Dest.LocalList -> LocalListScreen(model, dest.id)
+                    is Dest.Album -> AlbumScreen(model, dest)
+                    is Dest.Artist -> ArtistScreen(model, dest)
+                    is Dest.Playlist -> PlaylistScreen(model, dest)
+                    is Dest.Collection -> CollectionScreen(model, dest)
+                }
             }
         }
         AnimatedVisibility(
             visible = model.loading,
             modifier = Modifier.align(Alignment.TopEnd),
-            enter = fadeIn(tween(180)),
+            enter = fadeIn(tween(180, delayMillis = 250)),
             exit = fadeOut(tween(220)),
         ) {
-            CircularProgressIndicator(color = Accent)
+            CircularProgressIndicator(color = Accent, modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
         }
     }
 }
@@ -523,7 +580,6 @@ private fun PageHeader(title: String, model: AppModel, extra: String? = null) {
         extra?.let { Text(it, color = Muted) }
     }
     model.error?.let { Text(it, color = Accent, modifier = Modifier.padding(top = 8.dp)) }
-    model.status?.let { Text(it, color = Muted, modifier = Modifier.padding(top = 4.dp)) }
     Spacer(Modifier.height(16.dp))
 }
 
@@ -537,7 +593,7 @@ private fun HomeScreen(model: AppModel) {
         in 18..22 -> "İyi akşamlar"
         else -> "İyi geceler"
     }
-    val recent = model.history.distinctBy { it.id }.take(5)
+    val recent = remember(model.history) { model.history.distinctBy { it.id }.take(5) }
     val listState = rememberLazyListState()
     val loadAtEnd = remember(listState, model) {
         object : NestedScrollConnection {
@@ -561,7 +617,6 @@ private fun HomeScreen(model: AppModel) {
                 color = Color.White,
             )
             model.error?.let { Text(it, color = Accent, modifier = Modifier.padding(top = 6.dp)) }
-            model.status?.let { Text(it, color = Muted, modifier = Modifier.padding(top = 4.dp)) }
         }
         item {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -605,8 +660,10 @@ private fun HomeScreen(model: AppModel) {
                 }
             }
         }
-        items(page?.sections.orEmpty(), key = { it.title + (it.items.firstOrNull()?.id ?: it.items.size) }) { section ->
-            SectionRow(section, model)
+        if (page == null && model.error == null) item { SkeletonShelf() }
+        if (page == null && model.error != null && !model.loading) item { LoadFailure(model) }
+        itemsIndexed(page?.sections.orEmpty(), key = { at, section -> "$at-${section.title}" }) { at, section ->
+            Box(Modifier.appear(at + 2)) { SectionRow(section, model) }
         }
         if (model.homePaging) {
             item { LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 8.dp), color = Accent) }
@@ -628,7 +685,7 @@ private fun SectionRow(section: HomePage.Section, model: AppModel) {
         val artists = section.items.filterIsInstance<ArtistItem>()
         if (artists.isNotEmpty() && artists.size == section.items.size) {
             LazyRow(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                items(artists, key = { it.id }) { artist ->
+                items(artists) { artist ->
                     Column(
                         Modifier.width(112.dp).clickable { model.openItem(artist) },
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -642,7 +699,7 @@ private fun SectionRow(section: HomePage.Section, model: AppModel) {
             }
         } else {
             LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                items(section.items, key = { it.id + it.title }) { item -> MediaCard(item, model) }
+                items(section.items) { item -> MediaCard(item, model) }
             }
         }
     }
@@ -654,18 +711,25 @@ internal fun Cover(
     modifier: Modifier,
     description: String? = null,
     circle: Boolean = false,
+    size: Int = 320,
 ) {
     val palette = LocalPalette.current
-    val source = remember(url) { coverUrl(url) }
+    val source = remember(url, size) { coverUrl(url, size) }
+    val motion = LocalMotion.current
+    var ready by remember(source) { mutableStateOf(false) }
+    val alpha by animateFloatAsState(if (ready || !motion) 1f else 0f, tween(260), label = "kapakAc")
     val shape = if (circle) CircleShape else RoundedCornerShape(palette.corner)
     Box(modifier.clip(shape).background(palette.card)) {
         if (source != null) {
             AsyncImage(
                 model = source,
                 contentDescription = description,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().graphicsLayer { this.alpha = alpha },
                 contentScale = ContentScale.Crop,
+                onSuccess = { ready = true },
             )
+        } else {
+            Icon(Icons.Default.MusicNote, contentDescription = null, tint = palette.muted.copy(alpha = 0.4f), modifier = Modifier.align(Alignment.Center).fillMaxSize(0.4f))
         }
     }
 }
@@ -682,7 +746,7 @@ private fun MediaCard(item: YTItem, model: AppModel) {
     val frame by animateColorAsState(if (playing) palette.accent else Color.Transparent, tween(240), label = "frame")
     Column(
         Modifier
-            .width(172.dp)
+            .width(palette.cardWidth + 22.dp)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
@@ -693,9 +757,9 @@ private fun MediaCard(item: YTItem, model: AppModel) {
         Box(
             Modifier
                 .fillMaxWidth()
-                .height(172.dp)
-                .clip(RoundedCornerShape(6.dp))
-                .border(2.dp, frame, RoundedCornerShape(6.dp)),
+                .height(palette.cardWidth + 22.dp)
+                .clip(RoundedCornerShape(palette.corner))
+                .border(2.dp, frame, RoundedCornerShape(palette.corner)),
         ) {
             Cover(item.thumbnail, Modifier.fillMaxSize(), item.title)
             Box(Modifier.fillMaxSize().graphicsLayer { alpha = veil * 0.42f }.background(Color.Black))
@@ -726,20 +790,13 @@ private fun SearchScreen(model: AppModel) {
     Column(Modifier.fillMaxSize()) {
         PageHeader("Ara", model, "Üstteki alandan da arayabilirsin")
         TextButton(onClick = { model.openRail(Dest.Personal) }) { Text("Kitaplığımda da ara →") }
-        if (model.suggestions.isNotEmpty()) {
-            Spacer(Modifier.height(10.dp))
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                model.suggestions.forEach { suggestion ->
-                    SuggestionChip(onClick = { model.search(suggestion) }, label = { Text(suggestion) })
-                }
-            }
-        }
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf(
                 "Şarkılar" to YouTube.SearchFilter.FILTER_SONG,
                 "Albümler" to YouTube.SearchFilter.FILTER_ALBUM,
                 "Sanatçılar" to YouTube.SearchFilter.FILTER_ARTIST,
+                "Videolar" to YouTube.SearchFilter.FILTER_VIDEO,
                 "Listeler" to YouTube.SearchFilter.FILTER_COMMUNITY_PLAYLIST,
             ).forEach { (label, filter) ->
                 FilterChip(
@@ -754,15 +811,19 @@ private fun SearchScreen(model: AppModel) {
         }
         Spacer(Modifier.height(12.dp))
         if (model.query.isBlank() && model.searchItems.isEmpty()) {
-            Text("Bir şarkı yaz, öneriler chip olarak gelsin.", color = Muted)
+            Text("Üstteki kutuya bir şarkı, sanatçı veya albüm yaz.", color = Muted)
+        }
+        if (model.loading && model.searchItems.isEmpty()) SkeletonRows()
+        else if (!model.loading && model.query.isNotBlank() && model.searchItems.isEmpty() && model.error == null) {
+            Text("Sonuç çıkmadı. Farklı bir yazım veya başka bir süzgeç dene.", color = Muted)
         }
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            itemsIndexed(model.searchItems, key = { index, item -> item.id + index }) { _, item ->
+            itemsIndexed(model.searchItems, key = { index, item -> item.id + index }) { at, item ->
                 val duration = (item as? SongItem)?.duration?.takeIf { it > 0 }?.let { formatTime(it * 1000L) }
-                SongRow(item.title, itemSubtitle(item), item.thumbnail, duration, item.asTrack()?.id) { model.openItem(item) }
+                SongRow(item.title, itemSubtitle(item), item.thumbnail, duration, item.asTrack()?.id, modifier = Modifier.appear(at), track = item.asTrack()) { model.openItem(item) }
             }
             if (model.searchContinuation != null) {
-                item { Button(onClick = model::loadMoreSearch) { Text("Daha fazla") } }
+                item { LoadMore(model.searchContinuation, model::loadMoreSearch) }
             }
         }
     }
@@ -786,7 +847,6 @@ private fun LibraryScreen(model: AppModel) {
                 }
             }
             model.error?.let { Text(it, color = Accent, modifier = Modifier.padding(top = 6.dp)) }
-            model.status?.let { Text(it, color = Muted, modifier = Modifier.padding(top = 4.dp)) }
         }
         item {
             Row(
@@ -855,11 +915,11 @@ private fun LibraryScreen(model: AppModel) {
                     }
                 }
             }
-            items(model.libraryItems, key = { "yt-" + it.id + it.title }) { item ->
-                SongRow(item.title, itemSubtitle(item), item.thumbnail, id = item.asTrack()?.id) { model.openItem(item) }
+            itemsIndexed(model.libraryItems) { at, item ->
+                SongRow(item.title, itemSubtitle(item), item.thumbnail, id = item.asTrack()?.id, modifier = Modifier.appear(at), track = item.asTrack()) { model.openItem(item) }
             }
             if (model.libraryContinuation != null) {
-                item { Button(onClick = model::loadMoreLibrary) { Text("Daha fazla") } }
+                item { LoadMore(model.libraryContinuation, model::loadMoreLibrary) }
             }
         }
     }
@@ -960,25 +1020,16 @@ internal fun PlayButton(onClick: () -> Unit) {
 
 @Composable
 private fun ShortcutsScreen(model: AppModel) {
-    val rows = listOf(
-        "Ctrl + K" to "Hızlı arama ve komutlar",
-        "Boşluk" to "Oynat veya duraklat",
-        "Ctrl + Sağ" to "Sonraki parça",
-        "Ctrl + Sol" to "Önceki parça",
-        "Ctrl + Yukarı" to "Sesi aç",
-        "Ctrl + Aşağı" to "Sesi kıs",
-        "Ctrl + M" to "Sessiz",
-    )
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         PageHeader("Klavye kısayolları", model, "Pencere odaktayken çalışır")
-        rows.forEach { (keys, action) ->
+        shortcutHelp.forEach { (keys, action) ->
             Surface(
                 color = Card,
                 shape = RoundedCornerShape(LocalPalette.current.corner),
                 modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
             ) {
                 Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(keys, color = Color.White, fontWeight = FontWeight.SemiBold, modifier = Modifier.width(160.dp))
+                    Text(keys, color = Color.White, fontWeight = FontWeight.SemiBold, modifier = Modifier.width(200.dp))
                     Text(action, color = Muted)
                 }
             }
@@ -988,10 +1039,10 @@ private fun ShortcutsScreen(model: AppModel) {
 
 @Composable
 private fun HistoryScreen(model: AppModel) {
-    val counts = model.history.groupingBy { it.id }.eachCount()
-    val unique = model.history.distinctBy { it.id }
-    val tracks = unique.map { it.toTrack() }
-    val top = unique.map { it to (counts[it.id] ?: 1) }.sortedByDescending { it.second }.take(8)
+    val counts = remember(model.history) { model.history.groupingBy { it.id }.eachCount() }
+    val unique = remember(model.history) { model.history.distinctBy { it.id } }
+    val tracks = remember(unique) { unique.map { it.toTrack() } }
+    val top = remember(unique) { unique.map { it to (counts[it.id] ?: 1) }.sortedByDescending { it.second }.take(8) }
     LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1023,8 +1074,8 @@ private fun HistoryScreen(model: AppModel) {
         if (unique.isEmpty()) {
             item { Text("Bir şarkı açınca burada görünür.", color = Muted) }
         }
-        itemsIndexed(unique.take(40), key = { _, entry -> entry.id }) { index, entry ->
-            SongRow(entry.title, entry.artists, entry.thumbnail, id = entry.id, index = "${index + 1}") {
+        itemsIndexed(unique.take(200), key = { _, entry -> entry.id }) { index, entry ->
+            SongRow(entry.title, entry.artists, entry.thumbnail, id = entry.id, index = "${index + 1}", modifier = Modifier.appear(index), track = entry.toTrack()) {
                 model.player.playAll(tracks, index)
             }
         }
@@ -1033,9 +1084,9 @@ private fun HistoryScreen(model: AppModel) {
         }
         model.remoteHistory.forEach { section ->
             item { Text(section.title, color = Muted) }
-            items(section.songs, key = { section.title + it.id }) { song ->
-                SongRow(song.title, song.artists.joinToString { it.name }, song.thumbnail, id = song.id) {
-                    model.playSongs(section.songs, section.songs.indexOf(song))
+            itemsIndexed(section.songs) { at, song ->
+                SongRow(song.title, song.artists.joinToString { it.name }, song.thumbnail, id = song.id, track = song.toTrack()) {
+                    model.playSongs(section.songs, at)
                 }
             }
         }
@@ -1122,7 +1173,7 @@ private fun ExploreScreen(model: AppModel) {
             if (releases.size > 3) {
                 item {
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        items(releases.drop(3), key = { it.browseId }) { album -> MediaCard(album, model) }
+                        items(releases.drop(3)) { album -> MediaCard(album, model) }
                     }
                 }
             }
@@ -1132,7 +1183,7 @@ private fun ExploreScreen(model: AppModel) {
                 item { Text(group.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = Color.White) }
                 item {
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        items(group.items, key = { group.title + it.title }) { mood ->
+                        items(group.items) { mood ->
                             MoodCard(mood.title, Color(mood.stripeColor)) {
                                 model.open(Dest.Collection(mood.endpoint.browseId, mood.endpoint.params, mood.title))
                             }
@@ -1143,9 +1194,8 @@ private fun ExploreScreen(model: AppModel) {
         }
         if (filter == "Tümü" && risingSongs.isNotEmpty()) {
             item { Text(rising?.title ?: "Yükselenler", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = Color.White) }
-            items(risingSongs, key = { it.id }) { song ->
-                val index = risingSongs.indexOf(song)
-                SongRow(song.title, song.artists.joinToString { it.name }, song.thumbnail, formatTime((song.duration ?: 0) * 1000L), id = song.id, index = "${index + 1}") {
+            itemsIndexed(risingSongs) { index, song ->
+                SongRow(song.title, song.artists.joinToString { it.name }, song.thumbnail, song.length(), id = song.id, index = "${index + 1}", track = song.toTrack()) {
                     model.playSongs(risingSongs, index)
                 }
             }
@@ -1155,13 +1205,13 @@ private fun ExploreScreen(model: AppModel) {
                 item { Text(section.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = Color.White) }
                 item {
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        items(section.items, key = { section.title + it.id }) { item -> MediaCard(item, model) }
+                        items(section.items) { item -> MediaCard(item, model) }
                     }
                 }
             }
         }
         if (releases.isEmpty() && charts.isEmpty() && moods.isEmpty()) {
-            item { Text("Keşfet içeriği yükleniyor.", color = Muted) }
+            if (model.error != null && !model.loading) item { LoadFailure(model) } else item { SkeletonShelf() }
         }
     }
 }
@@ -1253,21 +1303,23 @@ private fun GenreDetail(model: AppModel) {
                 song.title,
                 song.artists.joinToString { it.name },
                 song.thumbnail,
-                formatTime((song.duration ?: 0) * 1000L),
+                song.length(),
                 id = song.id,
                 index = "${index + 1}",
+                modifier = Modifier.appear(index),
+                track = song.toTrack(),
             ) { model.playSongs(model.categorySongs, index) }
         }
         if (model.categoryAlbums.isNotEmpty()) {
             Text("Albümler", fontWeight = FontWeight.SemiBold, color = Color.White)
             LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                items(model.categoryAlbums, key = { it.id }) { album -> MediaCard(album, model) }
+                items(model.categoryAlbums) { album -> MediaCard(album, model) }
             }
         }
         if (model.categoryLists.isNotEmpty()) {
             Text("Listeler", fontWeight = FontWeight.SemiBold, color = Color.White)
             LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                items(model.categoryLists, key = { it.id }) { playlist -> MediaCard(playlist, model) }
+                items(model.categoryLists) { playlist -> MediaCard(playlist, model) }
             }
         }
         if (!model.categoryLoading && model.categorySongs.isEmpty() && model.categoryAlbums.isEmpty() && model.categoryLists.isEmpty()) {
@@ -1307,69 +1359,121 @@ private fun MoodCard(title: String, color: Color, onClick: () -> Unit) {
     }
 }
 
+private fun SongItem.length(): String? = duration?.takeIf { it > 0 }?.let { formatTime(it * 1000L) }
+
+/** Loads the next page when its row scrolls into view. */
 @Composable
-private fun AlbumScreen(model: AppModel) {
-    val page = model.album
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+private fun LoadMore(token: String?, load: () -> Unit) {
+    LaunchedEffect(token) { load() }
+    LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 10.dp), color = Accent)
+}
+
+/** Play, shuffle, queue and save buttons shared by album and playlist pages. */
+@Composable
+private fun CollectionActions(model: AppModel, title: String, songs: List<SongItem>) {
+    if (songs.isEmpty()) return
+    val tracks = remember(songs) { songs.map { it.toTrack() } }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        PlayButton { model.player.playAll(tracks, 0) }
+        SoftIcon(onClick = { model.player.playShuffled(tracks) }) { Icon(Icons.Default.Shuffle, contentDescription = "Karıştır", tint = Color.White) }
+        TextButton(onClick = { model.player.enqueue(tracks); model.status = "${tracks.size} şarkı sıraya eklendi" }) { Text("Sıraya ekle") }
+        TextButton(onClick = { model.saveAsPlaylist(title, tracks) }) { Text("Kitaplığa kaydet") }
+    }
+}
+
+@Composable
+private fun SongList(model: AppModel, songs: List<SongItem>, at: Int) {
+    val song = songs[at]
+    SongRow(
+        song.title,
+        song.artists.joinToString { it.name },
+        song.thumbnail,
+        song.length(),
+        id = song.id,
+        index = "${at + 1}",
+        modifier = Modifier.appear(at),
+        track = song.toTrack(),
+    ) { model.playSongs(songs, at) }
+}
+
+@Composable
+private fun AlbumScreen(model: AppModel, dest: Dest.Album) {
+    val page = model.pages[dest] as? AlbumPage
+    LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        if (page == null) {
+            item { if (model.error != null && model.current == dest) LoadFailure(model) else { SkeletonHeader(); Spacer(Modifier.height(16.dp)); SkeletonRows() } }
+            return@LazyColumn
+        }
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Cover(page?.album?.thumbnail, Modifier.size(168.dp))
+                Cover(page.album.thumbnail, Modifier.size(168.dp))
                 Spacer(Modifier.width(20.dp))
                 Column {
-                    Text(page?.album?.title ?: "Albüm", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = Color.White)
-                    Text(page?.album?.artists?.joinToString { it.name }.orEmpty(), color = Muted)
+                    Text(page.album.title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = Color.White, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Row {
+                        page.album.artists.orEmpty().forEach { artist ->
+                            val id = artist.id
+                            Text(
+                                artist.name, color = if (id != null) Accent else Muted,
+                                modifier = (if (id != null) Modifier.clickable { model.open(Dest.Artist(id)) } else Modifier).padding(end = 10.dp),
+                            )
+                        }
+                    }
+                    Text(
+                        listOfNotNull(page.album.year?.toString(), "${page.songs.size} şarkı", formatTime(page.songs.sumOf { (it.duration ?: 0) * 1000L })).joinToString(" · "),
+                        color = Muted, style = MaterialTheme.typography.bodySmall,
+                    )
                     Spacer(Modifier.height(12.dp))
-                    if (page != null && page.songs.isNotEmpty()) PlayButton { model.playSongs(page.songs, 0) }
+                    CollectionActions(model, page.album.title, page.songs)
                 }
             }
             Spacer(Modifier.height(8.dp))
         }
-        itemsIndexed(page?.songs.orEmpty()) { index, song ->
-            SongRow(
-                song.title,
-                song.artists.joinToString { it.name },
-                song.thumbnail,
-                formatTime((song.duration ?: 0) * 1000L),
-                id = song.id,
-                index = "${index + 1}",
-            ) {
-                page?.let { model.playSongs(it.songs, index) }
-            }
+        itemsIndexed(page.songs) { index, _ -> SongList(model, page.songs, index) }
+        if (page.otherVersions.isNotEmpty()) {
+            item { Text("Diğer sürümler", fontWeight = FontWeight.SemiBold, color = Color.White, modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)) }
+            item { LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) { items(page.otherVersions) { MediaCard(it, model) } } }
         }
     }
 }
 
 @Composable
-private fun ArtistScreen(model: AppModel) {
-    val page = model.artist
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+private fun ArtistScreen(model: AppModel, dest: Dest.Artist) {
+    val page = model.pages[dest] as? ArtistPage
+    LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        if (page == null) {
+            item { if (model.error != null && model.current == dest) LoadFailure(model) else { SkeletonHeader(circle = true); Spacer(Modifier.height(16.dp)); SkeletonShelf(1) } }
+            return@LazyColumn
+        }
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Cover(page?.artist?.thumbnail, Modifier.size(168.dp), circle = true)
+                Cover(page.artist.thumbnail, Modifier.size(168.dp), circle = true)
                 Spacer(Modifier.width(20.dp))
                 Column {
                     Text("Sanatçı", color = Muted, style = MaterialTheme.typography.labelMedium)
-                    Text(page?.artist?.title ?: "Sanatçı", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = Color.White)
-                    Text(page?.subscriberCountText ?: page?.monthlyListenerCount ?: "", color = Muted)
-                    page?.description?.let { Text(it, color = Muted, maxLines = 3, overflow = TextOverflow.Ellipsis) }
+                    Text(page.artist.title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = Color.White)
+                    Text(page.subscriberCountText ?: page.monthlyListenerCount ?: "", color = Muted)
+                    page.description?.let { Text(it, color = Muted, maxLines = 3, overflow = TextOverflow.Ellipsis) }
+                    val songs = page.sections.flatMap { it.items }.filterIsInstance<SongItem>()
+                    if (songs.isNotEmpty()) {
+                        Spacer(Modifier.height(10.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            PlayButton { model.playSongs(songs, 0) }
+                            TextButton(onClick = { model.startRadio(songs.first().toTrack()) }, enabled = !model.radioLoading) { Text("Sanatçı radyosu") }
+                        }
+                    }
                 }
             }
         }
-        page?.sections.orEmpty().forEach { section ->
-            item { Text(section.title, fontWeight = FontWeight.SemiBold, color = Color.White) }
+        page.sections.forEachIndexed { at, section ->
+            item { Text(section.title, fontWeight = FontWeight.SemiBold, color = Color.White, modifier = Modifier.appear(at)) }
             item {
                 val songs = section.items.filterIsInstance<SongItem>()
                 if (songs.isNotEmpty()) {
-                    Column {
-                        songs.forEachIndexed { index, song ->
-                            SongRow(song.title, song.artists.joinToString { it.name }, song.thumbnail, id = song.id) {
-                                model.playSongs(songs, index)
-                            }
-                        }
-                    }
+                    Column { songs.forEachIndexed { index, _ -> SongList(model, songs, index) } }
                 } else {
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        items(section.items, key = { section.title + it.id }) { item -> MediaCard(item, model) }
+                    LazyRow(Modifier.appear(at), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        items(section.items) { item -> MediaCard(item, model) }
                     }
                 }
             }
@@ -1378,49 +1482,51 @@ private fun ArtistScreen(model: AppModel) {
 }
 
 @Composable
-private fun PlaylistScreen(model: AppModel) {
-    val page = model.playlist
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+private fun PlaylistScreen(model: AppModel, dest: Dest.Playlist) {
+    val state = model.pages[dest] as? PlaylistState
+    LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        if (state == null) {
+            item { if (model.error != null && model.current == dest) LoadFailure(model) else { SkeletonHeader(); Spacer(Modifier.height(16.dp)); SkeletonRows() } }
+            return@LazyColumn
+        }
+        val page = state.page
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Cover(page?.playlist?.thumbnail, Modifier.size(168.dp))
+                Cover(page.playlist.thumbnail, Modifier.size(168.dp))
                 Spacer(Modifier.width(20.dp))
                 Column {
                     Text("Çalma listesi", color = Muted, style = MaterialTheme.typography.labelMedium)
-                    Text(page?.playlist?.title ?: "Çalma listesi", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = Color.White, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Text(page?.playlist?.author?.name.orEmpty(), color = Muted)
+                    Text(page.playlist.title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = Color.White, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        listOf(page.playlist.author?.name.orEmpty(), page.playlist.songCountText.orEmpty()).filter { it.isNotBlank() }.joinToString(" · "),
+                        color = Muted,
+                    )
                     Spacer(Modifier.height(12.dp))
-                    if (page != null && page.songs.isNotEmpty()) PlayButton { model.playSongs(page.songs, 0) }
+                    CollectionActions(model, page.playlist.title, page.songs)
                 }
             }
         }
-        itemsIndexed(page?.songs.orEmpty()) { index, song ->
-            SongRow(
-                song.title,
-                song.artists.joinToString { it.name },
-                song.thumbnail,
-                formatTime((song.duration ?: 0) * 1000L),
-                id = song.id,
-                index = "${index + 1}",
-            ) {
-                page?.let { model.playSongs(it.songs, index) }
-            }
-        }
-        if (model.playlistContinuation != null) {
-            item { Button(onClick = model::loadMorePlaylist) { Text("Daha fazla") } }
+        itemsIndexed(page.songs) { index, _ -> SongList(model, page.songs, index) }
+        if (state.continuation != null) {
+            item { LoadMore(state.continuation) { model.loadMorePlaylist(dest) } }
         }
     }
 }
 
 @Composable
-private fun CollectionScreen(model: AppModel, title: String) {
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { PageHeader(model.collection?.title ?: title, model) }
-        model.collection?.items.orEmpty().forEach { group ->
-            group.title?.let { item { Text(it, fontWeight = FontWeight.SemiBold, color = Color.White) } }
+private fun CollectionScreen(model: AppModel, dest: Dest.Collection) {
+    val page = model.pages[dest] as? BrowseResult
+    LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Text(page?.title ?: dest.title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold, color = Color.White) }
+        if (page == null) {
+            item { if (model.error != null && model.current == dest) LoadFailure(model) else SkeletonShelf() }
+            return@LazyColumn
+        }
+        page.items.forEachIndexed { at, group ->
+            group.title?.let { item { Text(it, fontWeight = FontWeight.SemiBold, color = Color.White, modifier = Modifier.appear(at)) } }
             item {
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    items(group.items, key = { (group.title ?: "") + it.id }) { media -> MediaCard(media, model) }
+                LazyRow(Modifier.appear(at), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    items(group.items) { media -> MediaCard(media, model) }
                 }
             }
         }
@@ -1466,7 +1572,7 @@ private fun AccountSettings(model: AppModel) {
         OutlinedTextField(
             value = model.cookieDraft,
             onValueChange = { model.cookieDraft = it },
-            modifier = Modifier.fillMaxWidth().height(120.dp),
+            modifier = Modifier.fillMaxWidth().height(120.dp).keepTyping(),
             placeholder = { Text("Cookie") },
             visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
         )
@@ -1487,7 +1593,7 @@ private fun LookSettings(model: AppModel) {
     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         Column(Modifier.weight(1.4f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             StudioCard("01  Taban teması") {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     surfaceChoices.forEach { choice ->
                         val selected = look.surfaceId == choice.id
                         Column(
@@ -1514,7 +1620,7 @@ private fun LookSettings(model: AppModel) {
                 }
             }
             StudioCard("02  Vurgu rengi") {
-                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     accentChoices.forEach { choice ->
                         val selected = look.accentId == choice.id
                         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { model.saveLook(accent = choice.id) }) {
@@ -1545,6 +1651,10 @@ private fun LookSettings(model: AppModel) {
                     }
                 }
                 Text("Seçimler anında kaydolur.", color = Muted, style = MaterialTheme.typography.bodySmall)
+            }
+            StudioCard("05  Hareket") {
+                ToggleSetting("Animasyonlar", model.motion, model::changeMotion)
+                Text("Geçişler, canlı ekolayzır çubukları, dalgalı ilerleme ve tam ekran ışıkları. Kapatınca arayüz anında tepki verir ve daha az güç kullanır.", color = Muted, style = MaterialTheme.typography.bodySmall)
             }
         }
         LookPreview(model, Modifier.width(280.dp))
@@ -1605,7 +1715,7 @@ private fun SystemSettings(model: AppModel) {
     }
     UpdateSettings(model)
     StudioCard("Pencere") {
-        Text("Kapatmak müziği durdurmaz. Simge tepside kalır. Tepsiden Çık uygulamayı kapatır.", color = Muted)
+        Text("Kapatmak müziği durdurmaz. Simge tepside kalır; tıklayınca pencere geri gelir, tepsiden Çık uygulamayı kapatır. Pencerenin yeri ve boyutu hatırlanır.", color = Muted)
     }
     StudioCard("Discord") {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -1629,8 +1739,12 @@ private fun SystemSettings(model: AppModel) {
             Switch(checked = model.privateListen, onCheckedChange = model::savePrivateListen)
         }
     }
+    StudioCard("Tanılama") {
+        Text("Bir şarkı çalmadığında hangi adımda takıldığını gösterir.", color = Muted)
+        TextButton(onClick = { model.open(Dest.Diagnostics) }) { Text("Tanılamayı aç") }
+    }
     StudioCard("Klavye") {
-        Text("Boşluk oynatır. Ctrl ile parça ve ses değişir.", color = Muted)
+        Text("Boşluk oynatır, Ctrl + K her şeyi arar.", color = Muted)
         TextButton(onClick = { model.open(Dest.Shortcuts) }) { Text("Kısayolları aç") }
     }
 }
@@ -1686,6 +1800,8 @@ internal fun FrameWindowScope.CaptionBar(
 ) {
     val ink = captionInk(colors)
     val brush = if (colors.size > 1) Brush.horizontalGradient(colors) else Brush.horizontalGradient(listOf(colors.first(), colors.first()))
+    val full by rememberUpdatedState(maximized)
+    val restore by rememberUpdatedState(onMaximize)
     val drag = Modifier.pointerInput(Unit) {
         var originX = 0
         var originY = 0
@@ -1693,6 +1809,8 @@ internal fun FrameWindowScope.CaptionBar(
         var windowY = 0
         detectDragGestures(
             onDragStart = {
+                // Dragging a maximized window restores it first, like any other Windows title bar.
+                if (full) restore()
                 val pointer = java.awt.MouseInfo.getPointerInfo().location
                 originX = pointer.x
                 originY = pointer.y
@@ -1705,8 +1823,10 @@ internal fun FrameWindowScope.CaptionBar(
             window.setLocation(windowX + pointer.x - originX, windowY + pointer.y - originY)
         }
     }
+    val toggle by rememberUpdatedState(onMaximize)
+    val doubleClick = Modifier.pointerInput(Unit) { detectTapGestures(onDoubleTap = { toggle() }) }
     Row(Modifier.fillMaxWidth().height(40.dp).background(brush), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.weight(1f).fillMaxHeight().then(drag), contentAlignment = Alignment.CenterStart) {
+        Box(Modifier.weight(1f).fillMaxHeight().then(doubleClick).then(drag), contentAlignment = Alignment.CenterStart) {
             Text(
                 title,
                 color = ink,
@@ -1871,6 +1991,8 @@ internal fun SongRow(
     trailing: String? = null,
     id: String? = null,
     index: String? = null,
+    modifier: Modifier = Modifier,
+    track: Track? = null,
     onClick: () -> Unit,
 ) {
     val palette = LocalPalette.current
@@ -1891,7 +2013,7 @@ internal fun SongRow(
     val shift by animateDpAsState(if (hovered) 6.dp else 0.dp, Glide, label = "shift")
     val rail by animateDpAsState(if (playing) 28.dp else 0.dp, Glide, label = "rail")
     Row(
-        Modifier
+        modifier
             .fillMaxWidth()
             .offset(x = shift)
             .clip(RoundedCornerShape(palette.corner))
@@ -1912,7 +2034,7 @@ internal fun SongRow(
             Text(subtitle, color = Color(0xFFC8C8D0), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
         }
         if (playing) {
-            Icon(Icons.Default.VolumeUp, contentDescription = "Çalıyor", tint = palette.accent, modifier = Modifier.padding(end = 8.dp).size(16.dp))
+            EqualizerBars(LocalAppModel.current?.player?.isPlaying == true, palette.accent, Modifier.padding(end = 8.dp))
         }
         AnimatedVisibility(hovered && !playing) {
             Icon(Icons.Default.PlayArrow, contentDescription = null, tint = palette.accent)
@@ -1920,9 +2042,11 @@ internal fun SongRow(
         trailing?.let { Text(it, color = Muted, modifier = Modifier.padding(start = 8.dp)) }
         val app = LocalAppModel.current
         if (app != null && id != null) {
-            val known = app.libraryTools.localTracks.find { it.id == id }?.toTrack()
-                ?: app.player.queue.find { it.id == id }
-                ?: Track(id, title, subtitle, thumbnail, 0)
+            val known = track ?: remember(id, app.libraryTools.localTracks, app.player.queue) {
+                app.libraryTools.localTracks.find { it.id == id }?.toTrack()
+                    ?: app.player.queue.find { it.id == id }
+                    ?: Track(id, title, subtitle, thumbnail, 0)
+            }
             TrackActions(app, listOf(known))
         }
     }
@@ -1958,25 +2082,51 @@ private fun SoftIcon(
     ) { content() }
 }
 
+/** Wavy while the music plays, flat while paused or dragged; hovering shows the time under the pointer. */
 @Composable
-private fun SeekBar(positionMs: Long, durationMs: Long, onSeek: (Long) -> Unit) {
+private fun SeekBar(positionMs: Long, durationMs: Long, playing: Boolean, onSeek: (Long) -> Unit) {
     var drag by remember { mutableStateOf<Float?>(null) }
-    val fraction = drag ?: if (durationMs > 0) (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) else 0f
+    var hover by remember { mutableStateOf<Float?>(null) }
+    val motion = LocalMotion.current
+    val accent = Accent
+    val seek by rememberUpdatedState(onSeek)
+    val real = if (durationMs > 0) (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) else 0f
+    // Position arrives a few times a second; glide between readings but jump on seeks and track changes.
+    val smooth = remember { Animatable(real) }
+    LaunchedEffect(real, playing) {
+        val jump = kotlin.math.abs(real - smooth.value) * durationMs > 1_500
+        if (!motion || !playing || jump) smooth.snapTo(real) else smooth.animateTo(real, tween(320, easing = LinearEasing))
+    }
+    val wave by animateFloatAsState(if (playing && motion && drag == null) 1f else 0f, tween(420), label = "dalga")
+    val grow by animateFloatAsState(if (hover != null || drag != null) 1f else 0f, Lift, label = "tutamac")
+    val phase = if (wave > 0f) {
+        rememberInfiniteTransition(label = "dalga").animateFloat(0f, 1f, infiniteRepeatable(tween(1600, easing = LinearEasing)), label = "faz")
+    } else null
     BoxWithConstraints(
         Modifier
             .fillMaxWidth()
-            .height(18.dp)
+            .height(22.dp)
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        hover = when (event.type) {
+                            PointerEventType.Exit -> null
+                            PointerEventType.Enter, PointerEventType.Move -> (event.changes.first().position.x / size.width).coerceIn(0f, 1f)
+                            else -> hover
+                        }
+                    }
+                }
+            }
             .pointerInput(durationMs) {
                 if (durationMs <= 0) return@pointerInput
-                detectTapGestures { offset ->
-                    onSeek((offset.x / size.width * durationMs).toLong().coerceIn(0, durationMs))
-                }
+                detectTapGestures { offset -> seek((offset.x / size.width * durationMs).toLong().coerceIn(0, durationMs)) }
             }
             .pointerInput(durationMs) {
                 if (durationMs <= 0) return@pointerInput
                 detectDragGestures(
                     onDragEnd = {
-                        drag?.let { onSeek((it * durationMs).toLong().coerceIn(0, durationMs)) }
+                        drag?.let { seek((it * durationMs).toLong().coerceIn(0, durationMs)) }
                         drag = null
                     },
                     onDragCancel = { drag = null },
@@ -1985,22 +2135,53 @@ private fun SeekBar(positionMs: Long, durationMs: Long, onSeek: (Long) -> Unit) 
                 }
             },
     ) {
-        val width = maxWidth * fraction
-        Box(Modifier.align(Alignment.CenterStart).fillMaxWidth().height(4.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.16f)))
-        Box(Modifier.align(Alignment.CenterStart).width(width).height(4.dp).clip(CircleShape).background(Accent))
-        if (durationMs > 0) {
-            Box(
-                Modifier
-                    .align(Alignment.CenterStart)
-                    .padding(start = (width - 6.dp).coerceAtLeast(0.dp))
-                    .size(12.dp)
-                    .clip(CircleShape)
-                    .background(Color.White),
+        val full = maxWidth
+        Canvas(Modifier.fillMaxSize()) {
+            val fraction = drag ?: smooth.value
+            val middle = size.height / 2
+            val thick = 4.dp.toPx() + 1.5.dp.toPx() * grow
+            val end = size.width * fraction
+            drawLine(Color.White.copy(alpha = 0.16f), Offset(end, middle), Offset(size.width, middle), thick, StrokeCap.Round)
+            if (end > 1f) {
+                val height = 3.2.dp.toPx() * wave
+                if (height < 0.2f) drawLine(accent, Offset(0f, middle), Offset(end, middle), thick, StrokeCap.Round)
+                else {
+                    val length = 26.dp.toPx()
+                    val shift = (phase?.value ?: 0f) * 2f * Math.PI.toFloat()
+                    val path = Path()
+                    var x = 0f
+                    while (true) {
+                        val at = x.coerceAtMost(end)
+                        // The wave flattens into the thumb so the two always meet.
+                        val calm = ((end - at) / length).coerceIn(0f, 1f)
+                        val y = middle + height * calm * kotlin.math.sin(at / length * 2f * Math.PI.toFloat() - shift)
+                        if (x == 0f) path.moveTo(at, y) else path.lineTo(at, y)
+                        if (x >= end) break
+                        x += 2f
+                    }
+                    drawPath(path, accent, style = Stroke(thick, cap = StrokeCap.Round))
+                }
+            }
+            if (durationMs > 0) drawCircle(Color.White, (5.dp.toPx() + 2.dp.toPx() * grow), Offset(end.coerceIn(5.dp.toPx(), size.width - 5.dp.toPx()), middle))
+        }
+        val tip = drag ?: hover
+        if (tip != null && durationMs > 0) {
+            Text(
+                formatTime((tip * durationMs).toLong()),
+                color = Color.White,
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                softWrap = false,
+                modifier = Modifier
+                    .offset(x = (full * tip - 22.dp).coerceIn(0.dp, (full - 44.dp).coerceAtLeast(0.dp)), y = (-18).dp)
+                    .background(Card, RoundedCornerShape(6.dp))
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
             )
         }
     }
 }
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun PlayerBar(model: AppModel) {
     val player = model.player
@@ -2013,24 +2194,31 @@ private fun PlayerBar(model: AppModel) {
     Surface(color = Panel, shadowElevation = 18.dp, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
             if (player.busy) LinearProgressIndicator(Modifier.fillMaxWidth(), color = Accent)
-            player.error?.let { Text(it, color = Accent, maxLines = 1) }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 AnimatedContent(
                     targetState = track?.let { NowPlaying(it.id, it.title, it.artists, it.thumbnail) },
-                    modifier = Modifier.weight(1f),
-                    transitionSpec = { fadeIn(tween(260)) togetherWith fadeOut(tween(180)) },
+                    modifier = Modifier.weight(1f).clip(RoundedCornerShape(10.dp))
+                        .clickable(enabled = track != null) { model.showNowPlaying = !model.showNowPlaying },
+                    transitionSpec = {
+                        (fadeIn(tween(260)) + slideInVertically(tween(320, easing = FastOutSlowInEasing)) { it / 3 }) togetherWith
+                            (fadeOut(tween(160)) + slideOutVertically(tween(220)) { -it / 3 })
+                    },
                     label = "parca",
                 ) { shown ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Cover(shown?.thumbnail, Modifier.size(64.dp))
                         Spacer(Modifier.width(12.dp))
                         Column {
-                            Text(shown?.title ?: "Çalmıyor", maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                shown?.title ?: "Çalmıyor", maxLines = 1, fontWeight = FontWeight.SemiBold,
+                                overflow = if (LocalMotion.current) TextOverflow.Clip else TextOverflow.Ellipsis,
+                                modifier = if (LocalMotion.current) Modifier.basicMarquee() else Modifier,
+                            )
                             Text(shown?.artists.orEmpty().ifBlank { " " }, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
                 }
-                Column(Modifier.width(480.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Column(Modifier.weight(1.35f).padding(horizontal = 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         SoftIcon(onClick = player::toggleShuffle) {
                             Icon(Icons.Default.Shuffle, contentDescription = "Karıştır", tint = if (player.shuffle) Accent else Muted)
@@ -2038,11 +2226,7 @@ private fun PlayerBar(model: AppModel) {
                         SoftIcon(onClick = player::previous, enabled = track != null) { Icon(Icons.Default.SkipPrevious, contentDescription = "Önceki") }
                         Surface(shape = CircleShape, color = Accent, shadowElevation = 8.dp, modifier = Modifier.size(46.dp)) {
                             SoftIcon(onClick = player::toggle, enabled = track != null) {
-                                Icon(
-                                    if (player.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                    contentDescription = "Oynat",
-                                    tint = Color.Black,
-                                )
+                                PlayPauseIcon(player.wantsPlay, Color.Black)
                             }
                         }
                         SoftIcon(onClick = player::next, enabled = track != null) { Icon(Icons.Default.SkipNext, contentDescription = "Sonraki") }
@@ -2058,19 +2242,20 @@ private fun PlayerBar(model: AppModel) {
                         Clock(formatTime(player.positionMs), TextAlign.End)
                         Spacer(Modifier.width(8.dp))
                         Box(Modifier.weight(1f)) {
-                            SeekBar(player.positionMs, known) { player.seek(it) }
+                            SeekBar(player.positionMs, known, player.isPlaying && !player.busy) { player.seek(it) }
                         }
                         Spacer(Modifier.width(8.dp))
                         Clock(if (known > 0) formatTime(known) else "—:——", TextAlign.Start)
                     }
                 }
                 Row(Modifier.weight(1f), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                    SoftIcon(onClick = model::likeCurrent, enabled = track != null) {
-                        Icon(
-                            Icons.Default.Favorite,
-                            contentDescription = "Beğen",
-                            tint = if (track != null && model.liked.any { it.id == track.id }) Accent else Muted,
-                        )
+                    HeartButton(track != null && model.isLiked(track.id), track != null, onClick = model::likeCurrent)
+                    SoftIcon(onClick = { model.prepareAdd() }, enabled = track != null) { Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = "Ekle") }
+                    SoftIcon(onClick = player::toggleLyrics, enabled = track != null) {
+                        Icon(Icons.Default.Lyrics, contentDescription = "Sözler", tint = if (player.showLyrics) Accent else Color.White)
+                    }
+                    SoftIcon(onClick = player::toggleQueue) {
+                        Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = "Sıra", tint = if (player.showQueue) Accent else Color.White)
                     }
                     Box {
                         var songMenu by remember { mutableStateOf(false) }
@@ -2098,12 +2283,9 @@ private fun PlayerBar(model: AppModel) {
                             )
                         }
                     }
-                    SoftIcon(onClick = model::prepareAdd, enabled = track != null) { Icon(Icons.Default.PlaylistAdd, contentDescription = "Ekle") }
-                    SoftIcon(onClick = player::toggleLyrics, enabled = track != null) { Icon(Icons.Default.GraphicEq, contentDescription = "Sözler") }
-                    SoftIcon(onClick = player::toggleQueue) { Icon(Icons.Default.QueueMusic, contentDescription = "Sıra") }
                     SoftIcon(onClick = player::toggleMute) {
                         Icon(
-                            if (player.volume <= 0.001f) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                            if (player.volume <= 0.001f) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
                             contentDescription = "Ses",
                             tint = Muted,
                         )
@@ -2111,7 +2293,9 @@ private fun PlayerBar(model: AppModel) {
                     Slider(
                         value = player.volume,
                         onValueChange = player::changeVolume,
-                        modifier = Modifier.width(96.dp),
+                        modifier = Modifier.width(96.dp).onPointerEvent(PointerEventType.Scroll) { event ->
+                            player.changeVolume(player.volume - event.changes.first().scrollDelta.y * 0.04f)
+                        },
                     )
                 }
             }

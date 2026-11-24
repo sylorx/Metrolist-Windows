@@ -3,7 +3,13 @@ package com.metrolist.desktop
 import org.bytedeco.javacv.FFmpegFrameGrabber
 import org.bytedeco.javacv.Java2DFrameConverter
 import java.io.File
+import java.io.IOException
+import java.nio.file.FileVisitResult
 import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.SimpleFileVisitor
+import java.nio.file.attribute.BasicFileAttributes
+import java.util.Locale
 import java.security.MessageDigest
 import javax.imageio.ImageIO
 import kotlinx.coroutines.currentCoroutineContext
@@ -12,23 +18,41 @@ import kotlinx.coroutines.ensureActive
 internal data class ScanResult(val tracks: List<SavedTrack>, val failed: Int)
 internal object LocalMusic {
     private val extensions = setOf("mp3", "flac", "wav", "ogg", "opus", "m4a", "aac", "wma", "aiff")
-    suspend fun scan(folders: List<String>, onProgress: (Int, String) -> Unit): ScanResult {
+    /** [known] tracks whose file has not changed are reused, so a rescan only opens new or edited files. */
+    suspend fun scan(folders: List<String>, known: List<SavedTrack> = emptyList(), onProgress: (Int, String) -> Unit): ScanResult {
+        val index = known.filter { it.localPath != null && it.durationMs > 0 }.associateBy { it.localPath }
         val songs = mutableListOf<SavedTrack>()
         val seen = mutableSetOf<String>()
         var failed = 0
         for (folder in folders) {
             val root = File(folder)
             if (!root.isDirectory) { failed++; continue }
-            Files.walk(root.toPath()).use { paths ->
-                val iterator = paths.iterator()
-                while (iterator.hasNext()) {
-                    currentCoroutineContext().ensureActive()
-                    val path = iterator.next()
-                    val file = path.toFile()
-                    if (!Files.isRegularFile(path) || file.extension.lowercase() !in extensions) continue
+            val context = currentCoroutineContext()
+            val files = mutableListOf<File>()
+            // One protected subfolder must not abort the whole scan.
+            Files.walkFileTree(root.toPath(), object : SimpleFileVisitor<Path>() {
+                override fun visitFile(file: Path, attributes: BasicFileAttributes): FileVisitResult {
+                    context.ensureActive()
+                    if (attributes.isRegularFile && file.toFile().extension.lowercase(Locale.ROOT) in extensions) files += file.toFile()
+                    return FileVisitResult.CONTINUE
+                }
+                override fun visitFileFailed(file: Path, error: IOException): FileVisitResult {
+                    failed++
+                    return FileVisitResult.CONTINUE
+                }
+                override fun postVisitDirectory(dir: Path, error: IOException?): FileVisitResult = FileVisitResult.CONTINUE
+            })
+            run {
+                for (file in files) {
+                    context.ensureActive()
                     val canonical = file.canonicalPath
                     if (!seen.add(canonical.lowercase())) continue
                     onProgress(songs.size, file.name)
+                    val unchanged = index[canonical]?.takeIf { it.addedAt == file.lastModified() }
+                    if (unchanged != null) {
+                        songs += unchanged
+                        continue
+                    }
                     try {
                         FFmpegFrameGrabber(file).use { reader ->
                             reader.setOption("probesize", "2000000")

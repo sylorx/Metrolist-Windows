@@ -1,10 +1,11 @@
 package com.metrolist.desktop
 
+import kotlin.math.roundToInt
+
 import com.sun.jna.Function
 import com.sun.jna.Native
 import com.sun.jna.Pointer
 import com.sun.jna.Structure
-import com.sun.jna.platform.win32.BaseTSD.ULONG_PTR
 import com.sun.jna.platform.win32.GDI32
 import com.sun.jna.platform.win32.Guid.CLSID
 import com.sun.jna.platform.win32.Guid.IID
@@ -29,8 +30,12 @@ import java.awt.SystemTray
 import java.awt.TrayIcon
 import java.awt.Window
 import java.awt.image.BufferedImage
-import com.sun.jna.Library
 import com.sun.jna.win32.StdCallLibrary
+
+internal fun toLogical(pixels: java.awt.Rectangle, scale: Double) = java.awt.Rectangle(
+    (pixels.x / scale).roundToInt(), (pixels.y / scale).roundToInt(),
+    (pixels.width / scale).roundToInt().coerceAtLeast(1), (pixels.height / scale).roundToInt().coerceAtLeast(1),
+)
 
 internal object TaskbarMedia {
     const val PREVIOUS = 1
@@ -51,14 +56,12 @@ internal object TaskbarMedia {
 
     private var commands: (Int) -> Unit = {}
     private var list: Pointer? = null
-    private var proc: SubclassProc? = null
     private val windows = mutableListOf<HWND>()
     private var previousIcon: HICON? = null
     private var playIcon: HICON? = null
     private var pauseIcon: HICON? = null
     private var nextIcon: HICON? = null
     private var tray: TrayIcon? = null
-    private var frameProc: SubclassProc? = null
 
     fun bind(onCommand: (Int) -> Unit) {
         commands = onCommand
@@ -118,8 +121,7 @@ internal object TaskbarMedia {
             val extended = user.GetWindowLongPtr(hwnd, -20).toLong()
             val shown = (extended or 0x40000L) and 0x80L.inv()
             user.SetWindowLongPtr(hwnd, -20, Pointer(shown))
-            ensureFrameHook()
-            Comctl.INSTANCE.SetWindowSubclass(hwnd, frameProc, ULONG_PTR(91), ULONG_PTR(0))
+            WindowHook.install(hwnd, ::frameMessage)
             val rect = com.sun.jna.platform.win32.WinDef.RECT()
             user.GetWindowRect(hwnd, rect)
             val width = rect.right - rect.left
@@ -193,8 +195,11 @@ internal object TaskbarMedia {
         ) != 0
     }.getOrDefault(true)
 
+    /** Takes AWT units and keeps the window above the taskbar without ever taking the focus. */
     fun cling(frame: Window, x: Int, y: Int, width: Int, height: Int) {
-        frame.focusableWindowState = false
+        if (frame.focusableWindowState) frame.focusableWindowState = false
+        val place = java.awt.Rectangle(x, y, width, height)
+        if (frame.bounds != place) frame.bounds = place
         val raw = Native.getComponentPointer(frame) ?: return
         val hwnd = HWND(raw)
         val user = User32.INSTANCE
@@ -202,9 +207,9 @@ internal object TaskbarMedia {
         val tool = (extended or 0x80L or 0x08000000L) and 0x00040000L.inv()
         if (extended != tool) {
             user.SetWindowLongPtr(hwnd, -20, Pointer(tool))
-            user.SetWindowPos(hwnd, HWND(Pointer.createConstant(-1)), x, y, width, height, 0x0070)
+            user.SetWindowPos(hwnd, HWND(Pointer.createConstant(-1)), 0, 0, 0, 0, 0x0073)
         } else {
-            user.SetWindowPos(hwnd, HWND(Pointer.createConstant(-1)), x, y, width, height, 0x0050)
+            user.SetWindowPos(hwnd, HWND(Pointer.createConstant(-1)), 0, 0, 0, 0, 0x0053)
         }
     }
 
@@ -218,9 +223,18 @@ internal object TaskbarMedia {
         return area ?: java.awt.Rectangle(java.awt.Toolkit.getDefaultToolkit().screenSize)
     }
 
-    fun taskbarBounds(): java.awt.Rectangle {
+    /** Pixels per AWT unit on the primary screen: 1.5 when Windows is set to 150 %. */
+    fun screenScale(): Double = runCatching {
+        java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment().defaultScreenDevice.defaultConfiguration.defaultTransform.scaleX
+    }.getOrDefault(1.0).takeIf { it > 0 } ?: 1.0
+
+    /** The taskbar in AWT units, the same space as Window.setLocation and the mouse pointer. */
+    fun taskbarBounds(): java.awt.Rectangle = toLogical(taskbarPixels(), screenScale())
+
+    private fun taskbarPixels(): java.awt.Rectangle {
         val screen = java.awt.Toolkit.getDefaultToolkit().screenSize
-        val fallback = java.awt.Rectangle(0, screen.height - 48, screen.width, 48)
+        val scale = screenScale()
+        val fallback = java.awt.Rectangle(0, ((screen.height - 48) * scale).toInt(), (screen.width * scale).toInt(), (48 * scale).toInt())
         return runCatching {
             val hwnd = User32.INSTANCE.FindWindow("Shell_TrayWnd", null) ?: return fallback
             val rect = com.sun.jna.platform.win32.WinDef.RECT()
@@ -237,32 +251,21 @@ internal object TaskbarMedia {
         if (windows.any { it.pointer == hwnd.pointer }) return
         val taskbar = ensureTaskbar() ?: return
         ensureIcons()
-        ensureHook()
         val buttons = buttons(playing = false, enabled = false)
         val hr = call(taskbar, 15, hwnd, 3, buttons[0].pointer)
         if (hr < 0) return
-        val id = ULONG_PTR((windows.size + 1).toLong())
-        val hooked = Comctl.INSTANCE.SetWindowSubclass(hwnd, proc, id, ULONG_PTR(0)) != 0
-        if (hooked) windows += hwnd
+        if (WindowHook.install(hwnd, ::buttonMessage)) windows += hwnd
     }
 
-    private fun ensureFrameHook() {
-        if (frameProc != null) return
-        frameProc = object : SubclassProc {
-            override fun callback(hwnd: HWND, msg: Int, wParam: WPARAM, lParam: LPARAM, id: ULONG_PTR, data: ULONG_PTR): LRESULT {
-                if (msg == 0x0083) {
-                    if (wParam.toInt() != 0) coverFrame(hwnd, lParam)
-                    return LRESULT(0)
-                }
-                if (msg == 0x0085 || msg == 0x00AE) return LRESULT(0)
-                if (msg == 0x0086) return Comctl.INSTANCE.DefSubclassProc(hwnd, msg, wParam, LPARAM(-1))
-                if (msg == 0x0084) {
-                    val hit = captionHit(hwnd, lParam)
-                    if (hit != null) return LRESULT(hit.toLong())
-                }
-                return Comctl.INSTANCE.DefSubclassProc(hwnd, msg, wParam, lParam)
-            }
+    private fun frameMessage(hwnd: HWND, msg: Int, wParam: WPARAM, lParam: LPARAM): LRESULT? {
+        if (msg == 0x0083) {
+            if (wParam.toInt() != 0) coverFrame(hwnd, lParam)
+            return LRESULT(0)
         }
+        if (msg == 0x0085 || msg == 0x00AE) return LRESULT(0)
+        if (msg == 0x0086) return WindowHook.forward(hwnd, msg, wParam, LPARAM(-1))
+        if (msg == 0x0084) captionHit(hwnd, lParam)?.let { return LRESULT(it.toLong()) }
+        return null
     }
 
     private fun coverFrame(hwnd: HWND, lParam: LPARAM) {
@@ -301,21 +304,16 @@ internal object TaskbarMedia {
         return null
     }
 
-    private fun ensureHook() {
-        if (proc != null) return
-        proc = object : SubclassProc {
-            override fun callback(hwnd: HWND, msg: Int, wParam: WPARAM, lParam: LPARAM, id: ULONG_PTR, data: ULONG_PTR): LRESULT {
-                if (msg == WM_COMMAND) {
-                    val packed = wParam.toLong().toInt()
-                    val event = (packed ushr 16) and 0xFFFF
-                    val command = packed and 0xFFFF
-                    if (event == THBN_CLICKED && command in PREVIOUS..NEXT) {
-                        commands(command)
-                    }
-                }
-                return Comctl.INSTANCE.DefSubclassProc(hwnd, msg, wParam, lParam)
-            }
+    @Suppress("UNUSED_PARAMETER")
+    private fun buttonMessage(hwnd: HWND, msg: Int, wParam: WPARAM, lParam: LPARAM): LRESULT? {
+        if (msg == WM_COMMAND) {
+            val packed = wParam.toLong().toInt()
+            val event = (packed ushr 16) and 0xFFFF
+            val command = packed and 0xFFFF
+            // Arrives on the toolkit thread; player state belongs to the UI thread.
+            if (event == THBN_CLICKED && command in PREVIOUS..NEXT) javax.swing.SwingUtilities.invokeLater { commands(command) }
         }
+        return null
     }
 
     private fun ensureTaskbar(): Pointer? {
@@ -376,6 +374,8 @@ internal object TaskbarMedia {
     private fun ensureTray() {
         if (tray != null || !SystemTray.isSupported()) return
         val menu = PopupMenu()
+        menu.add(item("Metrolist’i göster", SHOW))
+        menu.addSeparator()
         menu.add(item("Önceki", PREVIOUS))
         menu.add(item("Oynat / Duraklat", TOGGLE))
         menu.add(item("Sonraki", NEXT))
@@ -448,19 +448,6 @@ internal object TaskbarMedia {
     }
 }
 
-private interface SubclassProc : StdCallLibrary.StdCallCallback {
-    fun callback(hwnd: HWND, msg: Int, wParam: WPARAM, lParam: LPARAM, id: ULONG_PTR, data: ULONG_PTR): LRESULT
-}
-
-private interface Comctl : Library {
-    fun SetWindowSubclass(hwnd: HWND, proc: SubclassProc?, id: ULONG_PTR, data: ULONG_PTR): Int
-    fun DefSubclassProc(hwnd: HWND, msg: Int, wParam: WPARAM, lParam: LPARAM): LRESULT
-
-    companion object {
-        val INSTANCE: Comctl = Native.load("comctl32", Comctl::class.java)
-    }
-}
-
 private interface Dwm : StdCallLibrary {
     fun DwmSetWindowAttribute(hwnd: HWND, attribute: Int, value: Pointer, size: Int): Int
     fun DwmExtendFrameIntoClientArea(hwnd: HWND, margins: Pointer): Int
@@ -478,7 +465,8 @@ private interface UserIcon : StdCallLibrary {
     }
 }
 
-private open class ThumbButton : Structure() {
+/** Public because JNA reads the fields reflectively; a private class made every button call fail. */
+open class ThumbButton : Structure() {
     @JvmField var dwMask: Int = 0
     @JvmField var iId: Int = 0
     @JvmField var iBitmap: Int = 0

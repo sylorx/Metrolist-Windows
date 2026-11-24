@@ -8,7 +8,10 @@ Masaüstü için YouTube Music istemcisi. Telefon uygulamasının yerine geçmez
 
 ## Ne yapar
 
-- Oturum açmadan şarkı çalar. Akış, herkese açık Invidious ve Piped uçlarından gelir; onlar yetmezse Innertube yedeği denenir.
+- Oturum açmadan şarkı çalar. Doğrudan YouTube kaynağı ile herkese açık Invidious ve Piped uçları aynı anda denenir. Bir YouTube ses sunucusu ağından erişilemiyorsa adresteki yedek sunucuya geçilir.
+- Tam ekran oynatıcı (F11 veya alttaki kapağa tıkla): kapağın renginden ışıklar, akan sözler ve sıradakiler.
+- Hızlı arama ve komutlar (Ctrl + K): şarkı, liste, sayfa ve oynatma komutları tek kutuda.
+- Şarkı veya sanatçı radyosu; “bu şarkıyı/sanatçıyı önerme”. Otomatik devam aynı sanatçıyı arka arkaya dizmez.
 - Ana sayfa, arama, albüm, sanatçı ve çalma listesi.
 - Keşfet: Pop, Rap, Rock, Arabesk, Halk, Caz, Elektronik ve Akustik rafları, yeni çıkanlar ve ruh halleri.
 - Bu bilgisayarda beğenilenler ve yerel çalma listeleri. Çerez olmadan da durur.
@@ -51,7 +54,7 @@ Metrolists-main/        https://github.com/MetrolistGroup/Metrolist
 Metrolist-windows/      bu depo
 ```
 
-JDK 21 ve `jpackage` içeren bir JDK (Android OpenJDK 21 uygundur).
+JDK 21 ve `jpackage` içeren bir JDK (Android OpenJDK 21 uygundur). Innertube kaynağı başka bir klasördeyse `-PmetrolistSources=<yol>` ver.
 
 ```bat
 set JAVA_HOME=C:\Program Files\Android\openjdk\jdk-21.0.8
@@ -72,8 +75,11 @@ Ayar, geçmiş ve kapak önbelleği `%LOCALAPPDATA%\Metrolist` içindedir. Oturu
 - **Listeler:** ad değiştir, sil, M3U8 olarak dışa aktar; kutucuklarla çoklu seçim yaparak sıraya veya başka listeye ekle ve listeden çıkar. Liste düzeni sürükleme ya da ok düğmeleriyle değişir.
 - **Akıllı listeler:** son 30 günün beğenileri, uzun zamandır dinlenmeyenler ve en çok dinlenenler. Eski kayıtlarda beğenme tarihi bilinmiyorsa yeni beğeni gibi gösterilmez.
 - **Ses:** Ayarlar → Ses altında 10 bant ekolayzır, hazır profiller, ses seviyesi dengeleme, çıkış cihazı, sonraki parçayı hazırlama ve 0–12 saniye crossfade. Yerel dosyalarda da çalışır. Sonraki kaynak zamanında hazırlanamadığında normal geçiş kullanılır. Ses aygıtının birden fazla çıkış akışını desteklemesi gerekir.
-- **Bağlantı kurtarma:** parça ortasında hata oluşursa aynı konumdan en fazla iki kez kaynak yenilenir; kaynak alternatifleri de denenir. Hata çözülemezse **Yeniden dene** görünür. FFmpeg bağlantıları süre sınırı kullanır.
-- **Sözler:** yerel dosyanın yanındaki aynı adlı `.lrc` dosyası önceliklidir. Çevrimiçi eşleşme için [LRCLIB API](https://lrclib.net/docs) kullanılır; zamanlı söz bulunmazsa YouTube Music düz sözleri denenir. Zamanlı satıra tıklayarak o ana git; otomatik takibi aç/kapat. Başarılı sonuçlar 7 gün önbelleklenir. LRCLIB hız sınırına uyulur. Her parçanın zamanlı söz kaydı olmayabilir.
+- **Windows:** medya paneli, kilit ekranı ve ses göstergesinde şarkı, sanatçı ve kapak; medya tuşlarını Windows yönlendirir. Bildirim alanına küçültme, tek pencere, pencere yerini hatırlama ve %100 dışındaki ekran ölçekleri desteklenir.
+- **Animasyonlar:** sayfa geçişleri, yükleme iskeletleri, ekolayzır çubukları, dalgalı ilerleme ve söz vurgusu. Ayarlar → Görünüm → Hareket’ten kapatılır.
+- **Tanılama:** Ayarlar → Sistem → Tanılama son çalma denemelerini ve sürelerini gösterir. Kopyalanan rapor adres, çerez veya klasör yolu içermez.
+- **Bağlantı kurtarma:** 9 saniyede açılmayan kaynak sıradakiyle değiştirilir; duraklatılmış parça bağlantı yenilenince kendiliğinden başlamaz. Parça ortasında hata oluşursa aynı konumdan en fazla iki kez kaynak yenilenir; kaynak alternatifleri de denenir. Hata çözülemezse **Yeniden dene** görünür. FFmpeg bağlantıları süre sınırı kullanır.
+- **Sözler:** yerel dosyanın yanındaki aynı adlı `.lrc` dosyası önceliklidir. Çevrimiçi eşleşme için [LRCLIB API](https://lrclib.net/docs) kullanılır; tam eşleşme yoksa başlık temizlenerek aranır; zamanlı söz bulunmazsa YouTube Music düz sözleri denenir. Zamanlı satıra tıklayarak o ana git; otomatik takibi aç/kapat. Başarılı sonuçlar 7 gün önbelleklenir. LRCLIB hız sınırına uyulur. Her parçanın zamanlı söz kaydı olmayabilir.
 - **Yerel müzik:** klasör ekle/tara/iptal et/kaldır. MP3, FLAC, WAV, OGG, OPUS, M4A, AAC, WMA ve AIFF; dosya etiketleri, gömülü kapak ve `cover.jpg`/`folder.jpg` desteği. Dosyalar kopyalanmaz veya YouTube’a yüklenmez. Bağlı olmayan diskin indeksi korunur.
 - **İstatistikler:** hafta, 30 gün ve yıl görünümü; gerçek dinleme süresi, farklı parça sayısı, günlük grafik ve sanatçı sıralaması. Duraklatılan ve ileri sarılan süreler sayılmaz. Eski geçmişten süre tahmini yapılmaz. Kayıtlar gün ve parça bazında birleştirilir; son 400 günlük süre verisi korunur.
 - **Uyku:** Ayarlar → Uyku altında hazır/özel süre veya parça sonunda durdurma. Süreli zamanlayıcı son 10 saniyede sesi azaltır; kullanıcının ses ayarı değişmez. Zamanlayıcı uygulama yeniden başlatılınca devam etmez.

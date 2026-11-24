@@ -2,16 +2,12 @@ package com.metrolist.desktop
 
 import com.sun.jna.CallbackReference
 import com.sun.jna.Function
-import com.sun.jna.Library
 import com.sun.jna.Memory
 import com.sun.jna.Native
 import com.sun.jna.Pointer
-import com.sun.jna.platform.win32.BaseTSD.ULONG_PTR
 import com.sun.jna.platform.win32.Guid.IID
 import com.sun.jna.platform.win32.WinDef.HWND
-import com.sun.jna.platform.win32.WinDef.LPARAM
 import com.sun.jna.platform.win32.WinDef.LRESULT
-import com.sun.jna.platform.win32.WinDef.WPARAM
 import com.sun.jna.platform.win32.WinUser
 import com.sun.jna.ptr.PointerByReference
 import com.sun.jna.win32.StdCallLibrary
@@ -35,7 +31,15 @@ internal object MediaKeys {
 
     private var started = false
     private var player: PlaybackController? = null
-    private var controls: Pointer? = null
+    @Volatile private var controls: Pointer? = null
+    @Volatile private var display: Pointer? = null
+    private var lastDescription: List<String?>? = null
+    private val worker = java.util.concurrent.Executors.newSingleThreadExecutor { task ->
+        thread(start = false, isDaemon = true, name = "Metrolist-media-info") {
+            runCatching { Winrt.INSTANCE.RoInitialize(1) }
+            task.run()
+        }
+    }
     private var hook: Pointer? = null
     private var lastFire = 0L
     private var lastPlaying = false
@@ -43,9 +47,12 @@ internal object MediaKeys {
     private val held = HashSet<Int>()
     private val pins = mutableListOf<Any>()
 
-    private val blocked = listOf(
-        "00000003-0000-0000-C000-000000000046",
-        "AF86E2E0-B12D-4C6A-9C5A-D7AA65101E90",
+    // Windows rejects the handler when it claims interfaces such as INoMarshal, so only the real ones are answered:
+    // IUnknown, IAgileObject and TypedEventHandler<SystemMediaTransportControls, ButtonPressedEventArgs>.
+    private val supported = listOf(
+        "00000000-0000-0000-C000-000000000046",
+        "94EA2B94-E9CC-49E0-C0FF-EE64CA8F5B90",
+        "0557E996-7B23-5BAE-AA81-EA0D671143A4",
     ).map { guid ->
         val id = IID(guid)
         id.write()
@@ -60,7 +67,13 @@ internal object MediaKeys {
         val hwnd = HWND(raw)
         runCatching { subclass(hwnd) }
         thread(isDaemon = true, name = "Metrolist-media") {
-            runCatching { bind(hwnd) }.onFailure { println("Metrolist: medya oturumu kurulamadı (${it.message})") }
+            val session = runCatching { bind(hwnd) }.onFailure { println("Metrolist: medya oturumu kurulamadı (${it.message})") }
+            // With a Windows media session the system routes the keys, so other players keep theirs.
+            // The global hook remains only as a fallback.
+            if (session.isSuccess) {
+                // This thread owns the COM apartment of the session and has to outlive it.
+                while (true) Thread.sleep(Long.MAX_VALUE)
+            }
             runCatching { listen() }.onFailure { println("Metrolist: medya tuşları kurulamadı (${it.message})") }
         }
     }
@@ -80,6 +93,62 @@ internal object MediaKeys {
                 invoke(session, 7, status)
             }
         }
+    }
+
+    /** Shows the song in the Windows media panel, on the lock screen and above the volume slider. */
+    fun describe(track: Track?) {
+        val wanted = listOf(track?.title, track?.artists, coverUrl(track?.thumbnail)?.takeIf { it.startsWith("https://") })
+        worker.execute {
+            val updater = display ?: return@execute
+            if (wanted == lastDescription) return@execute
+            runCatching {
+                invoke(updater, 16)
+                if (wanted[0] != null) {
+                    invoke(updater, 7, 1)
+                    val slot = Memory(Native.POINTER_SIZE.toLong())
+                    if (invoke(updater, 12, slot) >= 0) slot.getPointer(0)?.let { music ->
+                        withString(wanted[0].orEmpty()) { invoke(music, 7, it) }
+                        withString(wanted[1].orEmpty()) { invoke(music, 11, it) }
+                        invoke(music, 2)
+                    }
+                    wanted[2]?.let { address -> runCatching { picture(address) { invoke(updater, 11, it) } } }
+                }
+                invoke(updater, 17)
+                lastDescription = wanted
+            }.onFailure { println("Metrolist: medya bilgisi yazılamadı (${it.message})") }
+        }
+    }
+
+    private fun picture(address: String, use: (Pointer) -> Unit) {
+        val slot = Memory(Native.POINTER_SIZE.toLong())
+        activation("Windows.Foundation.Uri", "44A9796F-723E-4FDF-A218-033E75B0C084") { uris ->
+            withString(address) { check(invoke(uris, 6, it, slot) >= 0) { "adres" } }
+        }
+        val uri = slot.getPointer(0) ?: return
+        try {
+            activation("Windows.Storage.Streams.RandomAccessStreamReference", "857309DC-3FBF-4E7D-986F-EF3B1A07A964") { references ->
+                val stream = Memory(Native.POINTER_SIZE.toLong())
+                check(invoke(references, 7, uri, stream) >= 0) { "kapak" }
+                stream.getPointer(0)?.let { use(it); invoke(it, 2) }
+            }
+        } finally { invoke(uri, 2) }
+    }
+
+    private fun activation(name: String, iid: String, use: (Pointer) -> Unit) {
+        val out = PointerByReference()
+        val id = IID(iid).apply { write() }
+        withString(name) { check(Winrt.INSTANCE.RoGetActivationFactory(it, id.pointer, out) >= 0) { name } }
+        val factory = out.value ?: return
+        try { use(factory) } finally { invoke(factory, 2) }
+    }
+
+    private fun <T> withString(text: String, use: (Pointer?) -> T): T {
+        val wide = Memory((text.length + 1L) * 2)
+        wide.write(0, text.toCharArray(), 0, text.length)
+        wide.setShort(text.length * 2L, 0)
+        val out = PointerByReference()
+        check(Winrt.INSTANCE.WindowsCreateString(wide, text.length, out) >= 0) { "metin" }
+        try { return use(out.value) } finally { Winrt.INSTANCE.WindowsDeleteString(out.value) }
     }
 
     private fun bind(hwnd: HWND) {
@@ -110,22 +179,24 @@ internal object MediaKeys {
         runCatching {
             val updater = Memory(Native.POINTER_SIZE.toLong())
             if (invoke(session, 8, updater) >= 0) {
-                val display = updater.getPointer(0)
-                if (display != null) {
-                    invoke(display, 7, 1)
-                    invoke(display, 17)
+                val panel = updater.getPointer(0)
+                if (panel != null) {
+                    invoke(panel, 7, 1)
+                    invoke(panel, 17)
+                    display = panel
                 }
             }
         }
         controls = session
         sync(lastPlaying, lastActive)
+        SwingUtilities.invokeLater { describe(player?.current) }
     }
 
     private fun handler(): Pointer {
         val query = object : QueryProc {
             override fun invoke(self: Pointer, riid: Pointer, out: Pointer): Int {
                 val raw = riid.getByteArray(0, 16)
-                if (blocked.any { it.contentEquals(raw) }) {
+                if (supported.none { it.contentEquals(raw) }) {
                     out.setPointer(0, null)
                     return 0x80004002.toInt()
                 }
@@ -143,7 +214,8 @@ internal object MediaKeys {
                     val button = Memory(4)
                     if (invoke(event, 6, button) >= 0) {
                         when (button.getInt(0)) {
-                            0, 1, 2 -> fire(Command.TOGGLE)
+                            0 -> fire(Command.PLAY)
+                            1, 2 -> fire(Command.PAUSE)
                             6 -> fire(Command.NEXT)
                             7 -> fire(Command.PREV)
                         }
@@ -192,7 +264,8 @@ internal object MediaKeys {
             if (code == 0 || code == -1) break
             if (message.message == WM_HOTKEY) {
                 when (message.wParam.toInt()) {
-                    1, 4 -> fire(Command.TOGGLE)
+                    1 -> fire(Command.TOGGLE)
+                    4 -> fire(Command.PAUSE)
                     2 -> fire(Command.NEXT)
                     3 -> fire(Command.PREV)
                 }
@@ -222,35 +295,26 @@ internal object MediaKeys {
         when (vk) {
             VK_MEDIA_NEXT_TRACK -> fire(Command.NEXT)
             VK_MEDIA_PREV_TRACK -> fire(Command.PREV)
+            VK_MEDIA_STOP -> fire(Command.PAUSE)
             else -> fire(Command.TOGGLE)
         }
         return true
     }
 
     private fun subclass(hwnd: HWND) {
-        val proc = object : SubclassProc {
-            override fun callback(hwnd: HWND, msg: Int, wParam: WPARAM, lParam: LPARAM, id: ULONG_PTR, data: ULONG_PTR): LRESULT {
-                if (msg == WM_APPCOMMAND && player?.current != null) {
-                    when ((lParam.toLong() ushr 16).toInt() and 0xFFFF) {
-                        11 -> {
-                            fire(Command.NEXT)
-                            return LRESULT(1)
-                        }
-                        12 -> {
-                            fire(Command.PREV)
-                            return LRESULT(1)
-                        }
-                        13, 14, 46, 47 -> {
-                            fire(Command.TOGGLE)
-                            return LRESULT(1)
-                        }
-                    }
-                }
-                return Comctl.INSTANCE.DefSubclassProc(hwnd, msg, wParam, lParam)
+        WindowHook.install(hwnd) { _, message, _, lParam ->
+            if (message != WM_APPCOMMAND || player?.current == null) return@install null
+            val command = when ((lParam.toLong() ushr 16).toInt() and 0xFFF) {
+                11 -> Command.NEXT
+                12 -> Command.PREV
+                14 -> Command.TOGGLE
+                46 -> Command.PLAY
+                13, 47 -> Command.PAUSE
+                else -> return@install null
             }
+            fire(command)
+            LRESULT(1)
         }
-        pin(proc)
-        Comctl.INSTANCE.SetWindowSubclass(hwnd, proc, ULONG_PTR(90), ULONG_PTR(0))
     }
 
     private fun fire(command: Command) {
@@ -263,6 +327,8 @@ internal object MediaKeys {
             runCatching {
                 when (command) {
                     Command.TOGGLE -> target.toggle()
+                    Command.PLAY -> if (!target.isPlaying) target.toggle()
+                    Command.PAUSE -> target.pause()
                     Command.NEXT -> target.next()
                     Command.PREV -> target.previous()
                 }
@@ -282,7 +348,7 @@ internal object MediaKeys {
 
     private fun hex(value: Int) = "0x${Integer.toHexString(value)}"
 
-    private enum class Command { TOGGLE, NEXT, PREV }
+    private enum class Command { TOGGLE, PLAY, PAUSE, NEXT, PREV }
 
     private interface QueryProc : StdCallLibrary.StdCallCallback {
         fun invoke(self: Pointer, riid: Pointer, out: Pointer): Int
@@ -298,10 +364,6 @@ internal object MediaKeys {
 
     private interface HookProc : StdCallLibrary.StdCallCallback {
         fun callback(nCode: Int, wParam: Long, lParam: Long): Long
-    }
-
-    private interface SubclassProc : StdCallLibrary.StdCallCallback {
-        fun callback(hwnd: HWND, msg: Int, wParam: WPARAM, lParam: LPARAM, id: ULONG_PTR, data: ULONG_PTR): LRESULT
     }
 
     private interface Winrt : StdCallLibrary {
@@ -325,15 +387,6 @@ internal object MediaKeys {
 
         companion object {
             val INSTANCE: UserEx = Native.load("user32", UserEx::class.java, W32APIOptions.UNICODE_OPTIONS)
-        }
-    }
-
-    private interface Comctl : Library {
-        fun SetWindowSubclass(hwnd: HWND, proc: SubclassProc, id: ULONG_PTR, data: ULONG_PTR): Int
-        fun DefSubclassProc(hwnd: HWND, msg: Int, wParam: WPARAM, lParam: LPARAM): LRESULT
-
-        companion object {
-            val INSTANCE: Comctl = Native.load("comctl32", Comctl::class.java)
         }
     }
 }

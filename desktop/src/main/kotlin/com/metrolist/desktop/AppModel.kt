@@ -2,6 +2,7 @@ package com.metrolist.desktop
 
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.metrolist.innertube.YouTube
@@ -18,6 +19,7 @@ import com.metrolist.innertube.pages.HistoryPage
 import com.metrolist.innertube.pages.HomePage
 import com.metrolist.innertube.pages.MoodAndGenres
 import com.metrolist.innertube.pages.PlaylistPage
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -28,8 +30,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/** Songs of a remote playlist together with the token of its next page. */
+data class PlaylistState(val page: PlaylistPage, val continuation: String?)
+
 class AppModel {
-    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main + CoroutineExceptionHandler { _, failure ->
+        // A failed write or request must not take the window down with it.
+        javax.swing.SwingUtilities.invokeLater { status = friendlyError(failure) }
+    })
     val store = Store()
     private val resolver = StreamResolver(appDir())
     internal val updates = Updater(scope, store, notify = TaskbarMedia::announce)
@@ -42,9 +50,13 @@ class AppModel {
         resolver = resolver,
         scope = scope,
         quality = { store.settings.quality },
-        onListening = { store.addSession(it) },
+        onListening = { session ->
+            if (closing) store.addSession(session)
+            else listeningWrite = scope.launch(Dispatchers.IO) { store.addSession(session) }
+        },
         autoplay = { store.settings.autoplay },
         autoSkipped = { track -> matchesBlock(track, store.blocks) },
+        report = { event -> events = (listOf(event) + events).take(80) },
         onPlayed = { track ->
             scope.launch(Dispatchers.IO) {
                 store.addHistory(track)
@@ -54,7 +66,25 @@ class AppModel {
         },
     )
 
+    @Volatile private var closing = false
+    private var listeningWrite: Job? = null
+    var events by mutableStateOf<List<PlaybackEvent>>(emptyList())
+        private set
     var stack by mutableStateOf(listOf<Dest>(Dest.Home))
+    /** Direction of the last navigation; page transitions follow it. */
+    var forward by mutableStateOf(true)
+        private set
+    /** Loaded pages by destination, so a slow answer can never appear under another page's title. */
+    val pages = mutableStateMapOf<Dest, Any>()
+    private val pageOrder = ArrayDeque<Dest>()
+    /** Increases each time the search field should take the keyboard. */
+    var focusSearch by mutableIntStateOf(0)
+    var showPalette by mutableStateOf(false)
+    var showNowPlaying by mutableStateOf(false)
+    var motion by mutableStateOf(store.settings.motion)
+        private set
+    var radioLoading by mutableStateOf(false)
+        private set
     var loading by mutableStateOf(false)
     var error by mutableStateOf<String?>(null)
     var status by mutableStateOf<String?>(store.warning)
@@ -66,11 +96,6 @@ class AppModel {
     var searchFilter by mutableStateOf(YouTube.SearchFilter.FILTER_SONG)
     var searchItems by mutableStateOf<List<YTItem>>(emptyList())
     var searchContinuation by mutableStateOf<String?>(null)
-    var album by mutableStateOf<AlbumPage?>(null)
-    var artist by mutableStateOf<ArtistPage?>(null)
-    var playlist by mutableStateOf<PlaylistPage?>(null)
-    var playlistContinuation by mutableStateOf<String?>(null)
-    var collection by mutableStateOf<BrowseResult?>(null)
     var libraryTab by mutableStateOf(LibraryTab.Playlists)
     var libraryItems by mutableStateOf<List<YTItem>>(emptyList())
     var libraryContinuation by mutableStateOf<String?>(null)
@@ -114,11 +139,22 @@ class AppModel {
     var captionCorner by mutableStateOf(store.settings.captionCorner)
     var playlistsForAdd by mutableStateOf<List<PlaylistItem>>(emptyList())
     var showAdd by mutableStateOf(false)
+    /** The songs the add dialog was opened for; the playing track may change while it is open. */
+    var addTargets by mutableStateOf<List<Track>>(emptyList())
+        private set
     var showCreate by mutableStateOf(false)
     var newPlaylistTitle by mutableStateOf("")
-    var quickOpen by mutableStateOf(false)
+    /** The "Sana özel" page opens the same Ctrl+K palette. */
+    var quickOpen: Boolean
+        get() = showPalette
+        set(value) { showPalette = value }
     private var loadGeneration by mutableIntStateOf(0)
     private var suggestJob: Job? = null
+    private var searchJob: Job? = null
+    private var pagingJob: Job? = null
+    private var chromeJob: Job? = null
+    private var homeAt = 0L
+    private var exploreAt = 0L
     val libraryTools = LibraryTools(this)
 
     val current: Dest get() = stack.last()
@@ -129,13 +165,27 @@ class AppModel {
         player.configureAudio(store.settings.validated().audio)
         updates.start()
         startLiveFeed()
+        // The decoder and the extractor are slow to load the first time; do it before the first song needs them.
         scope.launch(Dispatchers.IO) {
+            runCatching { org.bytedeco.javacv.FFmpegFrameGrabber.tryLoad() }
+            runCatching { resolver.prepare() }
+        }
+        // Runs in the model so playback keeps advancing while the window is hidden in the tray.
+        scope.launch {
+            while (true) {
+                delay(300)
+                player.poll()
+            }
+        }
+        scope.launch {
+            var ticks = 0
             while (true) {
                 delay(5_000)
-                withContext(Dispatchers.Main) {
-                    player.flushListening()
-                    runCatching { store.savePlayback(player.memory()) }.onFailure { status = "Oynatma kaydı yazılamadı: ${it.message}" }
-                }
+                // Snapshot on the UI thread, write on a background one; an unchanged state is not written again.
+                val memory = player.memory()
+                if (++ticks % 6 == 0) player.flushListening()
+                runCatching { withContext(Dispatchers.IO) { store.savePlayback(memory) } }
+                    .onFailure { status = "Oynatma kaydı yazılamadı: ${friendlyError(it)}" }
             }
         }
     }
@@ -143,6 +193,8 @@ class AppModel {
     fun reloadPreferences() {
         val settings = store.settings
         discordEnabled = settings.discord; discordAppId = settings.discordAppId; privateListen = settings.privateListen
+        chromeJob?.cancel(); chromeJob = null
+        motion = settings.motion
         look = Look.from(settings)
         quality = settings.quality
         widgetOn = settings.widget; widgetX = settings.widgetX; widgetY = settings.widgetY
@@ -165,56 +217,75 @@ class AppModel {
     }
 
     fun rememberPlayback() {
+        closing = true
         player.poll()
         player.flushListening()
-        store.savePlayback(player.memory())
+        runCatching { flushChrome() }
+        runCatching { kotlinx.coroutines.runBlocking { kotlinx.coroutines.withTimeoutOrNull(3_000) { listeningWrite?.join() } } }
+        runCatching { store.savePlayback(player.memory()) }
     }
 
     fun openRail(dest: Dest) {
+        val again = stack.size == 1 && current == dest
+        forward = true
+        showNowPlaying = false
         stack = listOf(dest)
-        refresh()
+        refresh(force = again)
     }
 
     fun open(dest: Dest) {
+        showNowPlaying = false
+        if (current == dest) { refresh(); return }
+        forward = true
         stack = stack + dest
         refresh()
     }
 
     fun back() {
-        if (stack.size > 1) stack = stack.dropLast(1)
+        if (showNowPlaying) { showNowPlaying = false; return }
+        if (stack.size <= 1) return
+        forward = false
+        stack = stack.dropLast(1)
         refresh()
     }
 
-    fun refresh() {
+    fun refresh(force: Boolean = false) {
         val dest = current
         val generation = ++loadGeneration
         loading = true
         error = null
         scope.launch {
-            val failure = runCatching { load(dest) }.exceptionOrNull()
+            val failure = runCatching { load(dest, force) }.exceptionOrNull()
             if (generation != loadGeneration) return@launch
             loading = false
-            error = failure?.message
+            error = failure?.let(::friendlyError)
         }
     }
 
     fun submitSearch() {
         val text = query.trim()
-        if (current !is Dest.Search) stack = listOf(Dest.Search)
+        showNowPlaying = false
+        if (current !is Dest.Search) { forward = true; stack = stack + Dest.Search }
         if (text.isNotBlank()) search(text)
     }
 
     fun search(text: String = query) {
         query = text
-        scope.launch {
-            loading = true
-            val result = withContext(Dispatchers.IO) { YouTube.search(text, searchFilter) }
-            loading = false
+        suggestJob?.cancel()
+        suggestions = emptyList()
+        searchJob?.cancel(); pagingJob?.cancel()
+        // Takes over the loading indicator from any page that is still arriving.
+        val generation = ++loadGeneration
+        loading = true
+        val filter = searchFilter
+        searchJob = scope.launch {
+            val result = withContext(Dispatchers.IO) { YouTube.search(text, filter) }
+            if (generation == loadGeneration) loading = false
             result.onSuccess {
                 searchItems = it.items
                 searchContinuation = it.continuation
                 error = null
-            }.onFailure { error = it.message }
+            }.onFailure { error = friendlyError(it) }
         }
     }
 
@@ -234,12 +305,13 @@ class AppModel {
 
     fun loadMoreSearch() {
         val token = searchContinuation ?: return
-        scope.launch {
+        if (pagingJob?.isActive == true) return
+        pagingJob = scope.launch {
             val result = withContext(Dispatchers.IO) { YouTube.searchContinuation(token) }
             result.onSuccess {
-                searchItems = searchItems + it.items
+                searchItems = (searchItems + it.items).distinctBy { item -> item.id }
                 searchContinuation = it.continuation
-            }
+            }.onFailure { searchContinuation = null; status = friendlyError(it) }
         }
     }
 
@@ -256,30 +328,36 @@ class AppModel {
         }
     }
 
-    fun loadMorePlaylist() {
-        val token = playlistContinuation ?: return
-        scope.launch {
+    fun loadMorePlaylist(dest: Dest.Playlist) {
+        val token = (pages[dest] as? PlaylistState)?.continuation ?: return
+        if (pagingJob?.isActive == true) return
+        pagingJob = scope.launch {
             val result = withContext(Dispatchers.IO) { YouTube.playlistContinuation(token) }
-            result.onSuccess { page ->
-                playlist = playlist?.copy(songs = playlist?.songs.orEmpty() + page.songs)
-                playlistContinuation = page.continuation
-            }
+            val shown = pages[dest] as? PlaylistState ?: return@launch
+            result.onSuccess { next ->
+                pages[dest] = PlaylistState(shown.page.copy(songs = shown.page.songs + next.songs), next.continuation?.takeIf { it != token })
+            }.onFailure { pages[dest] = shown.copy(continuation = null); status = friendlyError(it) }
         }
     }
 
     fun selectLibrary(tab: LibraryTab) {
+        if (tab == libraryTab) return
         libraryTab = tab
+        libraryItems = emptyList(); libraryContinuation = null
         refresh()
     }
 
     fun loadMoreLibrary() {
         val token = libraryContinuation ?: return
-        scope.launch {
+        if (pagingJob?.isActive == true) return
+        val tab = libraryTab
+        pagingJob = scope.launch {
             val result = withContext(Dispatchers.IO) { YouTube.libraryContinuation(token) }
+            if (tab != libraryTab) return@launch
             result.onSuccess { page ->
-                libraryItems = libraryItems + page.items
+                libraryItems = (libraryItems + page.items).distinctBy { it.id }
                 libraryContinuation = page.continuation
-            }
+            }.onFailure { libraryContinuation = null; status = friendlyError(it) }
         }
     }
 
@@ -332,40 +410,109 @@ class AppModel {
 
     fun likeCurrent() {
         val track = player.current ?: return
+        toggleLike(track)
+    }
+
+    fun isLiked(id: String): Boolean = liked.any { it.id == id }
+
+    fun toggleLike(track: Track) {
         val added = store.toggleLike(track.toSaved())
         liked = store.library.liked
         status = if (added) "Beğenildi" else "Beğeni kaldırıldı"
         if (track.localPath == null) libraryTools.queueSync(SyncAction("like", value = track.id, enabled = added))
     }
 
-    fun prepareAdd() {
-        val track = player.current ?: return
-        if (localPlaylists.isEmpty()) {
-            status = "Önce Kitaplık’tan bir liste oluştur"
-            return
-        }
-        showAdd = true
-        if (store.settings.cookie.isBlank()) return
+    fun startRadio(track: Track) {
+        if (track.localPath != null) { status = "Yerel dosyalardan radyo başlatılamaz"; return }
+        if (radioLoading) return
+        radioLoading = true
+        status = "Radyo hazırlanıyor…"
         scope.launch {
-            val page = withContext(Dispatchers.IO) { YouTube.library("FEmusic_liked_playlists").getOrNull() }
-            val remote = page?.items?.filterIsInstance<PlaylistItem>().orEmpty()
-            if (player.current?.id == track.id) playlistsForAdd = remote
+            try {
+                status = if (player.startRadio(track)) "${track.title} radyosu" else "Benzer şarkı bulunamadı"
+            } finally { radioLoading = false }
         }
     }
 
-    fun addCurrentTo(playlistId: String) {
-        val track = player.current ?: return
+    /** Same blocks as the player menu, for any song in a list. They only keep songs out of the automatic queue. */
+    fun block(track: Track) {
+        store.setSongBlocked(track.id, true)
+        blocks = store.blocks
+        player.applyBlocks()
+        status = "Bu şarkı artık radyoda çalmaz"
+    }
+
+    fun blockArtist(track: Track) {
+        val names = artistNames(track.artists)
+        if (names.isEmpty()) return
+        store.setArtistsBlocked(names, true)
+        blocks = store.blocks
+        player.applyBlocks()
+        status = "Bu sanatçı artık radyoda çalmaz"
+    }
+
+    fun unblock(id: String) { store.setSongBlocked(id, false); blocks = store.blocks }
+
+    fun unblockArtist(name: String) { store.setArtistsBlocked(listOf(name), false); blocks = store.blocks }
+
+    fun copyLink(track: Track) {
+        if (track.localPath != null) return
+        val link = "https://music.youtube.com/watch?v=${track.id}"
+        runCatching {
+            java.awt.Toolkit.getDefaultToolkit().systemClipboard.setContents(java.awt.datatransfer.StringSelection(link), null)
+        }.onSuccess { status = "Bağlantı kopyalandı" }.onFailure { status = "Pano şu an kullanılamıyor" }
+    }
+
+    /** Plain-text report without addresses, account data or folder names. */
+    fun diagnosticsReport(): String = buildString {
+        appendLine("Metrolist ${AppVersion.NAME} · ${System.getProperty("os.name")} · Java ${System.getProperty("java.version")}")
+        appendLine("Kalite: $quality · crossfade: ${player.audio.crossfadeSeconds} sn · oturum: ${if (store.settings.cookie.isBlank()) "yok" else "var"}")
+        val clock = java.time.format.DateTimeFormatter.ofPattern("dd.MM HH:mm:ss").withZone(java.time.ZoneId.systemDefault())
+        events.forEach { event ->
+            append(clock.format(java.time.Instant.ofEpochMilli(event.at))).append(if (event.failed) "  HATA  " else "  ")
+            append(event.track).append(" · ").append(event.stage).append(": ").append(event.detail)
+            if (event.tookMs > 0) append(" (").append(event.tookMs).append(" ms)")
+            appendLine()
+        }
+    }
+
+    fun copyDiagnostics() {
+        runCatching {
+            java.awt.Toolkit.getDefaultToolkit().systemClipboard.setContents(java.awt.datatransfer.StringSelection(diagnosticsReport()), null)
+        }.onSuccess { status = "Tanılama raporu kopyalandı" }.onFailure { status = "Pano şu an kullanılamıyor" }
+    }
+
+    fun clearDiagnostics() { events = emptyList() }
+
+    fun prepareAdd() { player.current?.let { prepareAdd(listOf(it)) } }
+
+    fun prepareAdd(tracks: List<Track>) {
+        if (tracks.isEmpty()) return
+        addTargets = tracks
+        playlistsForAdd = emptyList()
+        showAdd = true
+        if (store.settings.cookie.isBlank() || tracks.any { it.localPath != null }) return
+        scope.launch {
+            val page = withContext(Dispatchers.IO) { YouTube.library("FEmusic_liked_playlists").getOrNull() }
+            val linked = store.library.playlists.flatMap { it.remoteBindings.values }.toSet()
+            if (addTargets === tracks) playlistsForAdd = page?.items?.filterIsInstance<PlaylistItem>().orEmpty().filterNot { it.id in linked }
+        }
+    }
+
+    fun addTargetsTo(playlistId: String) {
+        val tracks = addTargets
+        showAdd = false
+        if (tracks.isEmpty()) return
         if (playlistId.startsWith("local-")) {
-            libraryTools.addTracks(playlistId, listOf(track.toSaved()))
-            localPlaylists = store.library.playlists
-            status = "Listeye eklendi"
-            showAdd = false
+            libraryTools.addTracks(playlistId, tracks.map { it.toSaved() })
             return
         }
+        val remote = tracks.filter { it.localPath == null }
         scope.launch {
-            val result = withContext(Dispatchers.IO) { YouTube.addToPlaylist(playlistId, track.id) }
-            status = if (result.isSuccess) "YouTube listesine eklendi" else result.exceptionOrNull()?.message
-            showAdd = false
+            val failure = withContext(Dispatchers.IO) {
+                remote.firstNotNullOfOrNull { YouTube.addToPlaylist(playlistId, it.id).exceptionOrNull() }
+            }
+            status = if (failure == null) "YouTube listesine eklendi" else friendlyError(failure)
         }
     }
 
@@ -375,11 +522,29 @@ class AppModel {
             status = "Liste adı yaz"
             return
         }
-        libraryTools.createPlaylist(title)
+        val tracks = if (addAfterCreate) addTargets.map { it.toSaved() } else emptyList()
+        addAfterCreate = false
+        libraryTools.createPlaylist(title, tracks)
         localPlaylists = store.library.playlists
         newPlaylistTitle = ""
         showCreate = false
-        status = "Liste oluşturuldu"
+        status = if (tracks.isEmpty()) "Liste oluşturuldu" else "Liste oluşturuldu, ${tracks.size} şarkı eklendi"
+    }
+
+    private var addAfterCreate = false
+
+    fun createForTargets() {
+        addAfterCreate = true
+        showAdd = false
+        showCreate = true
+    }
+
+    fun cancelCreate() { addAfterCreate = false; showCreate = false }
+
+    fun saveAsPlaylist(title: String, tracks: List<Track>) {
+        if (tracks.isEmpty()) return
+        libraryTools.createPlaylist(title.ifBlank { "Yeni liste" }, tracks.map { it.toSaved() })
+        status = "Kitaplığa kaydedildi: ${tracks.size} şarkı"
     }
 
     fun openLocal(id: String) {
@@ -391,7 +556,7 @@ class AppModel {
             while (true) {
                 delay(45_000)
                 when (current) {
-                    Dest.Explore -> loadExplore()
+                    Dest.Explore -> runCatching { loadExplore() }
                     else -> Unit
                 }
             }
@@ -413,12 +578,16 @@ class AppModel {
         "oyun müziği",
     )
     private var homeMixCursor = 0
+    private var homeEpoch = 0
     private val seenHome = mutableSetOf<String>()
 
     private suspend fun appendHome() {
         val token = homeContinuation
+        // Results that arrive after the page was reloaded belong to the old page.
+        val epoch = homeEpoch
         if (!token.isNullOrBlank()) {
             val page = withContext(Dispatchers.IO) { YouTube.home(continuation = token).getOrNull() }
+            if (epoch != homeEpoch) return
             if (page != null && page.sections.isNotEmpty()) {
                 addHomeSections(page.sections)
                 homeContinuation = page.continuation
@@ -437,38 +606,65 @@ class AppModel {
         val found = withContext(Dispatchers.IO) { YouTube.search(query, filter).getOrNull() }?.items.orEmpty()
             .distinctBy { it.id }
             .take(14)
-        if (found.isEmpty()) return
+        if (found.isEmpty() || epoch != homeEpoch) return
         val title = when (filter) {
             YouTube.SearchFilter.FILTER_ALBUM -> "$query albümleri"
             YouTube.SearchFilter.FILTER_COMMUNITY_PLAYLIST -> "$query listeleri"
-            else -> "$query"
+            else -> query.replaceFirstChar { it.titlecase(java.util.Locale.forLanguageTag("tr")) }
         }
         addHomeSections(listOf(HomePage.Section(title, null, null, null, found)))
     }
 
     private fun addHomeSections(incoming: List<HomePage.Section>) {
         val current = home ?: return
-        val fresh = incoming.filter { section ->
-            val key = section.title + section.items.take(4).joinToString { it.id }
-            seenHome.add(key)
-        }
+        val fresh = incoming.filter { section -> seenHome.add(sectionKey(section)) }
         if (fresh.isEmpty()) return
         home = current.copy(sections = current.sections + fresh)
     }
 
+    private fun sectionKey(section: HomePage.Section) = section.title + section.items.take(4).joinToString { it.id }
+
+    /** Writes a settings change; a full disk or locked file becomes a message instead of a crash. */
+    private fun persist(change: (Settings) -> Settings): Boolean =
+        runCatching { store.saveSettings(change(store.settings)) }
+            .onFailure { status = "Ayar kaydedilemedi: ${friendlyError(it)}" }.isSuccess
+
     fun saveCookie() {
-        val cookie = cookieDraft.trim()
-        store.saveSettings(store.settings.copy(cookie = cookie))
+        val cookie = cleanCookie(cookieDraft)
+        if (cookie.isNotBlank() && "SAPISID=" !in cookie) {
+            status = "Bu çerezde SAPISID yok. music.youtube.com isteğinin Cookie başlığının tamamını yapıştır."
+            return
+        }
+        if (!persist { it.copy(cookie = cookie) }) return
+        cookieDraft = cookie
         applyCookie(cookie)
         status = if (cookie.isBlank()) "Çıkış yapıldı" else "Çerez kaydedildi"
         accountName = null
-        refresh()
+        // Everything on screen may belong to the previous account.
+        pages.clear(); pageOrder.clear()
+        home = null; homeAt = 0; exploreAt = 0
+        libraryItems = emptyList(); libraryContinuation = null; remoteHistory = emptyList(); playlistsForAdd = emptyList()
+        refresh(force = true)
+        libraryTools.retrySync()
     }
 
     fun saveQuality(quality: String) {
         this.quality = quality
-        store.saveSettings(store.settings.copy(quality = quality))
+        persist { it.copy(quality = quality) }
     }
+
+    fun changeMotion(on: Boolean) { motion = on; persist { it.copy(motion = on) } }
+
+
+    fun saveWindow(x: Int, y: Int, width: Int, height: Int, maximized: Boolean) {
+        val old = store.settings
+        val next = if (maximized) old.copy(windowMaximized = true)
+            else old.copy(windowX = x, windowY = y, windowWidth = width, windowHeight = height, windowMaximized = false)
+        if (next != old) persist { next }
+    }
+
+    /** True when a window restored at this place would still have a reachable title bar. */
+    internal fun placeVisible(x: Int, y: Int): Boolean = x != NO_PLACE && y != NO_PLACE && onScreens(x + 120, y + 10)
 
     fun setWidget(on: Boolean) {
         widgetOn = on
@@ -552,9 +748,25 @@ class AppModel {
         saveChrome()
     }
 
+    /** Sliders and drags call this continuously; only the final value reaches the disk. */
     private fun saveChrome() {
-        store.saveSettings(
-            store.settings.copy(
+        chromeJob?.cancel()
+        chromeJob = scope.launch {
+            delay(350)
+            chromeJob = null
+            writeChrome()
+        }
+    }
+
+    private fun flushChrome() {
+        if (chromeJob == null) return
+        chromeJob?.cancel(); chromeJob = null
+        writeChrome()
+    }
+
+    private fun writeChrome() {
+        persist {
+            it.copy(
                 widget = widgetOn,
                 widgetX = widgetX,
                 widgetY = widgetY,
@@ -573,8 +785,8 @@ class AppModel {
                 captionStart = captionStart,
                 captionEnd = captionEnd,
                 captionCorner = captionCorner,
-            ),
-        )
+            )
+        }
     }
 
     fun saveDiscordEnabled(enabled: Boolean) {
@@ -638,14 +850,7 @@ class AppModel {
         cards: String = look.cardId,
     ) {
         look = Look(accent, surface, corners, cards)
-        store.saveSettings(
-            store.settings.copy(
-                accent = accent,
-                surface = surface,
-                corners = corners,
-                cards = cards,
-            ),
-        )
+        persist { it.copy(accent = accent, surface = surface, corners = corners, cards = cards) }
     }
 
     private fun applyCookie(cookie: String) {
@@ -653,11 +858,28 @@ class AppModel {
         YouTube.useLoginForBrowse = cookie.isNotBlank()
     }
 
-    private suspend fun load(dest: Dest) {
+    private fun fresh(at: Long, minutes: Int) = System.currentTimeMillis() - at < minutes * 60_000L
+
+    private suspend fun <T : Any> loadPage(dest: Dest, force: Boolean, fetch: suspend () -> T) {
+        if (!force && pages[dest] != null) return
+        val page = withContext(Dispatchers.IO) { fetch() }
+        pages[dest] = page
+        pageOrder.remove(dest); pageOrder.addLast(dest)
+        while (pageOrder.size > 24) pageOrder.removeFirst().let { if (it !in stack) pages.remove(it) }
+    }
+
+    private suspend fun load(dest: Dest, force: Boolean = false) {
         when (dest) {
-            Dest.Home -> withContext(Dispatchers.IO) { YouTube.home() }.getOrThrow().also {
-                home = it
-                homeContinuation = it.continuation
+            Dest.Home -> if (force || home == null || !fresh(homeAt, 20)) {
+                withContext(Dispatchers.IO) { YouTube.home() }.getOrThrow().also {
+                    homeEpoch++
+                    homeAt = System.currentTimeMillis()
+                    homeMixCursor = 0
+                    seenHome.clear()
+                    it.sections.forEach { section -> seenHome.add(sectionKey(section)) }
+                    home = it
+                    homeContinuation = it.continuation
+                }
             }
             Dest.Search -> Unit
             Dest.Library -> loadLibrary()
@@ -667,27 +889,23 @@ class AppModel {
                     remoteHistory = withContext(Dispatchers.IO) { YouTube.musicHistory().getOrNull()?.sections.orEmpty() }
                 }
             }
-            Dest.Explore -> loadExplore()
+            Dest.Explore -> if (force || !fresh(exploreAt, 10)) loadExplore()
             Dest.Settings -> {
                 if (store.settings.cookie.isNotBlank()) {
                     accountName = withContext(Dispatchers.IO) { YouTube.accountInfo().getOrNull()?.name }
                 }
             }
             Dest.Liked -> liked = store.library.liked
-            Dest.Shortcuts, Dest.LocalMusic, Dest.Insights -> Unit
+            Dest.Shortcuts, Dest.LocalMusic, Dest.Insights, Dest.Diagnostics, Dest.Blocked -> Unit
             is Dest.Smart -> Unit
             Dest.Personal -> Unit
             is Dest.LocalList -> Unit
-            is Dest.Album -> album = withContext(Dispatchers.IO) { YouTube.album(dest.browseId).getOrThrow() }
-            is Dest.Artist -> artist = withContext(Dispatchers.IO) { YouTube.artist(dest.browseId).getOrThrow() }
-            is Dest.Playlist -> {
-                val page = withContext(Dispatchers.IO) { YouTube.playlist(dest.playlistId).getOrThrow() }
-                playlist = page
-                playlistContinuation = page.songsContinuation
+            is Dest.Album -> loadPage(dest, force) { YouTube.album(dest.browseId).getOrThrow() }
+            is Dest.Artist -> loadPage(dest, force) { YouTube.artist(dest.browseId).getOrThrow() }
+            is Dest.Playlist -> loadPage(dest, force) {
+                YouTube.playlist(dest.playlistId).getOrThrow().let { PlaylistState(it, it.songsContinuation) }
             }
-            is Dest.Collection -> collection = withContext(Dispatchers.IO) {
-                YouTube.browse(dest.browseId, dest.params).getOrThrow()
-            }
+            is Dest.Collection -> loadPage(dest, force) { YouTube.browse(dest.browseId, dest.params).getOrThrow() }
         }
     }
 
@@ -697,8 +915,10 @@ class AppModel {
             libraryContinuation = null
             return
         }
-        val page = withContext(Dispatchers.IO) { YouTube.library(libraryTab.browseId).getOrThrow() }
-        libraryItems = page.items
+        val tab = libraryTab
+        val page = withContext(Dispatchers.IO) { YouTube.library(tab.browseId).getOrThrow() }
+        if (tab != libraryTab) return
+        libraryItems = page.items.distinctBy { it.id }
         libraryContinuation = page.continuation
     }
 
@@ -713,10 +933,36 @@ class AppModel {
             val chartsCall = async(Dispatchers.IO) { YouTube.getChartsPage() }
             val moodsCall = async(Dispatchers.IO) { YouTube.moodAndGenres() }
             val releasesCall = async(Dispatchers.IO) { YouTube.newReleaseAlbums() }
-            explore = exploreCall.await().getOrNull()
-            charts = chartsCall.await().getOrNull()
-            moods = moodsCall.await().getOrNull().orEmpty()
-            releases = releasesCall.await().getOrNull().orEmpty()
+            val calls = listOf(exploreCall.await(), chartsCall.await(), moodsCall.await(), releasesCall.await())
+            // A dropped connection keeps what is already on screen.
+            exploreCall.await().onSuccess { explore = it }
+            chartsCall.await().onSuccess { charts = it }
+            moodsCall.await().onSuccess { moods = it }
+            releasesCall.await().onSuccess { releases = it }
+            if (calls.all { it.isFailure }) throw calls.first().exceptionOrNull()!!
+            exploreAt = System.currentTimeMillis()
         }
+    }
+}
+
+/** Accepts a whole copied header line, including wrapped text. */
+internal fun cleanCookie(raw: String): String = raw.trim()
+    .replace(Regex("^cookie\\s*:\\s*", RegexOption.IGNORE_CASE), "")
+    .replace(Regex("\\s*[\\r\\n]+\\s*"), " ")
+    .filter { it.code in 0x20..0x7E }.trim()
+
+/** Turns transport exceptions into something a listener can act on. */
+internal fun friendlyError(failure: Throwable): String {
+    val chain = generateSequence(failure) { it.cause }.take(6).toList()
+    return when {
+        chain.any { it is java.net.UnknownHostException || it is java.net.ConnectException || it is java.net.NoRouteToHostException } ||
+            chain.any { it.javaClass.simpleName.contains("UnresolvedAddress") } ->
+            "İnternete ulaşılamadı. Bağlantını kontrol edip yeniden dene."
+        chain.any { it is java.net.SocketTimeoutException || it.javaClass.simpleName.contains("Timeout") } ->
+            "Sunucu zamanında yanıt vermedi. Yeniden dene."
+        chain.any { it is javax.net.ssl.SSLException } -> "Güvenli bağlantı kurulamadı. Saat ve ağ ayarlarını kontrol et."
+        chain.any { it is java.nio.file.AccessDeniedException } -> "Dosyaya erişim izni yok."
+        else -> failure.message?.lineSequence()?.firstOrNull()?.replace(Regex("https?://\\S+"), "…")?.take(200)
+            ?.takeIf { it.isNotBlank() } ?: failure.javaClass.simpleName
     }
 }

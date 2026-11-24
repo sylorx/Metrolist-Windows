@@ -11,6 +11,19 @@ data class AudioSettings(
     val gapless: Boolean = true,
 )
 
+/** Case, accent and Turkish dotted/dotless-i insensitive form used by every search box. */
+internal fun fold(text: String): String = searchText(text)
+
+/** Every word of the query has to appear somewhere in the song. */
+internal fun SavedTrack.matches(query: String): Boolean {
+    val words = fold(query).split(' ').filter { it.isNotBlank() }
+    if (words.isEmpty()) return true
+    val text = fold("$title $artists $album")
+    return words.all { it in text }
+}
+
+internal fun turkishOrder(): java.text.Collator = java.text.Collator.getInstance(java.util.Locale.forLanguageTag("tr-TR"))
+
 enum class SmartRule(val title: String) {
     RecentLikes("Son 30 günde beğenilenler"),
     Forgotten("Uzun zamandır dinlenmeyenler"),
