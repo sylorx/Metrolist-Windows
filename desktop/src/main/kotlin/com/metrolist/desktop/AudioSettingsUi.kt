@@ -49,6 +49,7 @@ internal fun AudioStudio(model: AppModel) {
         ToggleSetting("Ses seviyesini dengele", audio.normalize) { tools.configureAudio(audio.copy(normalize = it)) }
         ToggleSetting("Kesintisiz geçiş için sonraki parçayı hazırla", audio.gapless) { tools.configureAudio(audio.copy(gapless = it)) }
         ToggleSetting("Liste bitince benzer şarkılar ekle", tools.autoplay, tools::changeAutoplay)
+        TextButton(onClick = { model.open(Dest.Blocked) }) { Text("Önerilmeyen şarkı ve sanatçılar") }
         Text("Crossfade · ${audio.crossfadeSeconds} saniye", color = Color.White)
         var seconds by remember(audio.crossfadeSeconds) { mutableStateOf(audio.crossfadeSeconds.toFloat()) }
         Slider(seconds, { seconds = it }, valueRange = 0f..12f, steps = 11,
@@ -58,7 +59,7 @@ internal fun AudioStudio(model: AppModel) {
 }
 
 @Composable
-private fun ToggleSetting(title: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+internal fun ToggleSetting(title: String, checked: Boolean, onChange: (Boolean) -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(title, color = Color.White, modifier = Modifier.weight(1f))
         Switch(checked, onChange)
@@ -76,7 +77,7 @@ internal fun SleepSettings(player: PlaybackController) {
         }
         var custom by remember { mutableStateOf("20") }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(custom, { custom = it.filter(Char::isDigit).take(3) }, label = { Text("Dakika") }, singleLine = true, modifier = Modifier.width(140.dp))
+            OutlinedTextField(custom, { custom = it.filter(Char::isDigit).take(3) }, label = { Text("Dakika") }, singleLine = true, modifier = Modifier.width(140.dp).keepTyping())
             TextButton(onClick = { player.setSleep(custom.toIntOrNull()) }, enabled = (custom.toIntOrNull() ?: 0) in 1..999) { Text("Başlat") }
         }
         Row {
@@ -102,7 +103,12 @@ internal fun DataSettings(model: AppModel) {
         Text(if (tools.syncing) "Eşitleniyor…" else "${tools.pendingCount} işlem bekliyor", color = Color.White)
         tools.syncMessage?.let { Text(it, color = Muted) }
         Text("Hesap açıkken yapılan yeni liste ve beğeni değişiklikleri sırayla gönderilir. Başarısız işlemler sonraki deneme için saklanır. Yerel müzik dosyaları YouTube’a yüklenmez.", color = Muted)
-        TextButton(onClick = tools::retrySync, enabled = !tools.syncing) { Text("Yeniden dene") }
+        Row {
+            TextButton(onClick = tools::retrySync, enabled = !tools.syncing) { Text("Yeniden dene") }
+            if (tools.pendingCount > 0 && tools.syncMessage != null && tools.canSkip) {
+                TextButton(onClick = tools::skipFirstSync, enabled = !tools.syncing) { Text("Takılan ilk işlemi atla") }
+            }
+        }
     }
     StudioCard("Kayıt koruması") {
         Text("Ayarlar ve kitaplık atomik kaydedilir; önceki sürümleri .bak dosyalarında tutulur. Oturum çerezi bu Windows hesabına bağlı DPAPI ile korunur.", color = Muted)

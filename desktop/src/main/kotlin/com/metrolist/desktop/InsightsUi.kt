@@ -1,6 +1,12 @@
 package com.metrolist.desktop
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animateIntAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -49,8 +55,10 @@ internal fun InsightsScreen(model: AppModel) {
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-            Column { Text("${summary.totalMs / 60_000} dk", style = MaterialTheme.typography.headlineLarge, color = Accent); Text("Dinleme süresi", color = Muted) }
-            Column { Text("${summary.tracks}", style = MaterialTheme.typography.headlineLarge, color = Accent); Text("Farklı parça", color = Muted) }
+            val minutes by animateIntAsState((summary.totalMs / 60_000).toInt(), tween(if (LocalMotion.current) 700 else 0), label = "dakika")
+            val songs by animateIntAsState(summary.tracks, tween(if (LocalMotion.current) 700 else 0), label = "parca")
+            Column { Text("$minutes dk", style = MaterialTheme.typography.headlineLarge, color = Accent); Text("Dinleme süresi", color = Muted) }
+            Column { Text("$songs", style = MaterialTheme.typography.headlineLarge, color = Accent); Text("Farklı parça", color = Muted) }
             Column { Text("${sessions.sumOf { it.listenedMs } / 3_600_000} sa", style = MaterialTheme.typography.headlineLarge, color = Accent); Text("Tüm zamanlar", color = Muted) }
         }
         if (summary.totalMs == 0L) Text("Müzik dinledikçe gerçek dinleme süren burada birikir. Duraklatılan ve ileri sarılan süreler sayılmaz.", color = Muted)
@@ -58,7 +66,14 @@ internal fun InsightsScreen(model: AppModel) {
             val daily = if (days > 30) summary.daily.chunked(7).map { group -> group.first().first to group.sumOf { it.second } } else summary.daily
             val peak = (daily.maxOfOrNull { it.second } ?: 0).coerceAtLeast(1)
             Row(Modifier.fillMaxWidth().height(140.dp), horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.Bottom) {
-                daily.forEach { (_, duration) -> Box(Modifier.weight(1f).height((140f * duration / peak).coerceAtLeast(2f).dp).background(Accent)) }
+                daily.forEachIndexed { at, (_, duration) ->
+                    val tall by animateFloatAsState(
+                        (140f * duration / peak).coerceAtLeast(2f),
+                        if (LocalMotion.current) tween(520, delayMillis = (at * 14).coerceAtMost(420), easing = FastOutSlowInEasing) else snap(),
+                        label = "cubuk",
+                    )
+                    Box(Modifier.weight(1f).height(tall.dp).background(Accent, RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp)))
+                }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 val format = DateTimeFormatter.ofPattern("dd MMM")
@@ -68,6 +83,7 @@ internal fun InsightsScreen(model: AppModel) {
             if (days > 30) Text("Her çubuk bir haftayı gösterir.", color = Muted)
         }
         StudioCard("En çok dinlenen sanatçılar") {
+            if (summary.artists.isEmpty()) Text("Henüz yeterli dinleme yok.", color = Muted)
             summary.artists.forEachIndexed { index, (name, duration) ->
                 Row(Modifier.fillMaxWidth()) {
                     Text("${index + 1}. $name", color = Color.White, modifier = Modifier.weight(1f))

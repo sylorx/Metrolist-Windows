@@ -90,7 +90,7 @@ class LibraryIntegrationTest {
     }
 
     @Test fun lrcSupportsFractionsOffsetsMultipleTimestampsAndChronologicalOrder() {
-        val lines = parseLrc("[offset:-100]\n[00:02.5][00:04.050]Tekrar\n[00:01.05]Başlangıç\n[00:70]Geçersiz\n[ar:Sanatçı]")
+        val lines = parseLrc("[offset:100]\n[00:02.5][00:04.050]Tekrar\n[00:01.05]Başlangıç\n[00:70]Geçersiz\n[ar:Sanatçı]")
         assertEquals(listOf(950L, 2400L, 3950L), lines.map { it.timeMs })
         assertEquals(listOf("Başlangıç", "Tekrar", "Tekrar"), lines.map { it.text })
     }

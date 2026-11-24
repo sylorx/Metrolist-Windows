@@ -15,6 +15,13 @@ import com.metrolist.innertubex.extraction.YtConfigParser
 import com.metrolist.innertubex.extraction.YtConfigParserImpl
 import com.metrolist.innertubex.extraction.generateClientPlaybackNonce
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.selects.select
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -48,63 +55,53 @@ class StreamResolver(dir: File) : PlaybackStreams {
         remember("$videoId|$quality", stream)
     }
 
-    override suspend fun openers(videoId: String, quality: String): List<Stream> {
-        val saved = cached("$videoId|$quality")
-        val free = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            FreeStreams.resolveAll(videoId, quality)
+    override fun saved(videoId: String, quality: String): Stream? = cached("$videoId|$quality")
+
+    /**
+     * Public proxies and the direct source are asked at the same time, because either one can be blocked or
+     * overloaded on a given network. A direct source is only offered after its media server has answered.
+     */
+    override suspend fun openers(videoId: String, quality: String): List<Stream> = coroutineScope {
+        val free = async { FreeStreams.resolveAll(videoId, quality) }
+        val direct = async { withTimeoutOrNull(7_000) { innertube(videoId, quality) } }
+        val first = select<List<Stream>> {
+            free.onAwait { it }
+            direct.onAwait { listOfNotNull(it) }
         }
-        return (listOfNotNull(saved) + free).distinctBy { it.url }
+        val fast = if (first.isEmpty()) null else if (direct.isCompleted) direct.await() else withTimeoutOrNull(1_200) { direct.await() }
+        val proxies = if (free.isCompleted) free.await() else if (fast == null) free.await() else emptyList()
+        val late = if (fast == null && proxies.isEmpty()) direct.await() else null
+        coroutineContext.cancelChildren()
+        (listOfNotNull(fast ?: late) + proxies).distinctBy { it.url }
     }
 
     override suspend fun innertube(videoId: String, quality: String): Stream? {
-        val audioQuality = when (quality) {
-            "HIGH" -> AudioQuality.HIGH
-            "LOW" -> AudioQuality.LOW
-            else -> AudioQuality.AUTO
-        }
-        val guest = YouTube.cookie.isNullOrBlank()
-        val overrides = if (guest) {
-            listOf("ANDROID_VR_NO_AUTH", null, "ANDROID_VR_1_65_10")
-        } else {
-            listOf(null, "ANDROID_VR_NO_AUTH")
-        }
-        for (override in overrides) {
-            val stream = runCatching { extract(videoId, audioQuality, override) }.getOrNull()
-            if (stream != null) return stream
+        for (override in clientOverrides()) {
+            try {
+                extract(videoId, audioQuality(quality), override)?.let { found -> MediaHosts.reachable(found)?.let { return it } }
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (_: Exception) {
+                // The next client may still succeed.
+            }
         }
         return null
     }
 
+    private fun audioQuality(quality: String) = when (quality) {
+        "HIGH" -> AudioQuality.HIGH
+        "LOW" -> AudioQuality.LOW
+        else -> AudioQuality.AUTO
+    }
+
+    private fun clientOverrides(): List<String?> =
+        if (YouTube.cookie.isNullOrBlank()) listOf("ANDROID_VR_NO_AUTH", null, "ANDROID_VR_1_65_10")
+        else listOf(null, "ANDROID_VR_NO_AUTH")
+
     override suspend fun resolve(videoId: String, quality: String): Stream {
         val key = "$videoId|$quality"
         cached(key)?.let { return it }
-        FreeStreams.resolve(videoId, quality)?.let { stream ->
-            return stream
-        }
-        val audioQuality = when (quality) {
-            "HIGH" -> AudioQuality.HIGH
-            "LOW" -> AudioQuality.LOW
-            else -> AudioQuality.AUTO
-        }
-        val guest = YouTube.cookie.isNullOrBlank()
-        val overrides = if (guest) {
-            listOf("ANDROID_VR_NO_AUTH", null, "ANDROID_VR_1_65_10")
-        } else {
-            listOf(null, "ANDROID_VR_NO_AUTH")
-        }
-        var last: Exception? = null
-        for (override in overrides) {
-            try {
-                val stream = extract(videoId, audioQuality, override) ?: continue
-                remember(key, stream)
-                return stream
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Exception) {
-                last = error
-            }
-        }
-        throw last ?: IllegalStateException("Çalınabilir akış bulunamadı")
+        return openers(videoId, quality).firstOrNull() ?: throw IllegalStateException("Çalınabilir akış bulunamadı")
     }
 
     private suspend fun extract(videoId: String, audioQuality: AudioQuality, override: String?): Stream? {
@@ -131,7 +128,8 @@ class StreamResolver(dir: File) : PlaybackStreams {
 
     private fun remember(key: String, stream: Stream) {
         cache[key] = CachedStream(stream, streamCacheDeadline(stream.url, System.currentTimeMillis()))
-        if (cache.size > 48) cache.keys.firstOrNull()?.let { cache.remove(it) }
+        // Drop the entry closest to expiry, never the one just added.
+        if (cache.size > 48) cache.entries.filter { it.key != key }.minByOrNull { it.value.untilMs }?.let { cache.remove(it.key) }
     }
 
     private fun cached(key: String): Stream? {
@@ -172,6 +170,77 @@ class StreamResolver(dir: File) : PlaybackStreams {
         val cipher: YouTubeCipherService,
         val extractor: InnerTubeExtractor,
     )
+}
+
+/**
+ * YouTube names two media servers in every address. The first is often a cache inside the internet provider's
+ * network and can be unreachable while the second one works, so both are tried at once.
+ */
+internal object MediaHosts {
+    private const val COOL_DOWN_MS = 10 * 60 * 1000L
+    private val unreachable = ConcurrentHashMap<String, Long>()
+    private val http = okhttp3.OkHttpClient.Builder()
+        .connectTimeout(4, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(4, java.util.concurrent.TimeUnit.SECONDS)
+        .callTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
+
+    /** The same signed address on each server it is valid for, preferred one first. */
+    fun candidates(url: String): List<String> {
+        val parsed = url.toHttpUrlOrNull() ?: return listOf(url)
+        if (!parsed.host.endsWith(".googlevideo.com")) return listOf(url)
+        val number = parsed.queryParameter("fvip")?.takeIf { it.toIntOrNull() != null } ?: "1"
+        val hosts = parsed.queryParameter("mn").orEmpty().split(',').filter { NODE.matches(it) }
+            .map { "rr$number---$it.googlevideo.com" }
+            .filterNot { it.substringAfter("---") == parsed.host.substringAfter("---") }
+        // The address is signed, so only the host part of the text may change.
+        return (listOf(url) + hosts.map { url.replaceFirst("://${parsed.host}", "://$it") }).distinct()
+    }
+
+    suspend fun reachable(stream: StreamResolver.Stream): StreamResolver.Stream? {
+        val all = candidates(stream.url)
+        if (all.size == 1 && all.single().toHttpUrlOrNull()?.host?.endsWith(".googlevideo.com") != true) return stream
+        val now = System.currentTimeMillis()
+        val ordered = all.sortedBy { (unreachable[node(it)] ?: 0L) > now }
+        val answered = raceSources(
+            ordered.mapIndexed<String, suspend () -> String?> { at, url ->
+                {
+                    // The preferred server keeps a short head start, so a healthy one is always used.
+                    delay(at * 350L)
+                    url.takeIf { answers(it, stream.headers) }
+                }
+            },
+            want = 1, graceMs = 0, deadlineMs = 5_500,
+        ).firstOrNull() ?: return null
+        ordered.takeWhile { it != answered }.forEach { unreachable[node(it)] = now + COOL_DOWN_MS }
+        unreachable.remove(node(answered))
+        return stream.copy(url = answered)
+    }
+
+    private fun node(url: String) = url.toHttpUrlOrNull()?.host?.substringAfter("---").orEmpty()
+
+    private suspend fun answers(url: String, headers: Map<String, String>): Boolean {
+        val request = runCatching {
+            okhttp3.Request.Builder().url(url).apply { headers.forEach { (name, value) -> header(name, value) } }
+                .header("Range", "bytes=0-1").build()
+        }.getOrNull() ?: return false
+        val call = http.newCall(request)
+        return suspendCancellableCoroutine { continuation ->
+            continuation.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : okhttp3.Callback {
+                override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {
+                    if (continuation.isActive) continuation.resumeWith(Result.success(false))
+                }
+
+                override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+                    val ok = response.use { it.code == 206 || it.code == 200 }
+                    if (continuation.isActive) continuation.resumeWith(Result.success(ok))
+                }
+            })
+        }
+    }
+
+    private val NODE = Regex("^sn-[a-z0-9-]+$")
 }
 
 private fun YtConfigParser.withEmbeddedConfigFallback(): YtConfigParser =

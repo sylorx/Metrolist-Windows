@@ -27,6 +27,7 @@ import java.util.concurrent.TimeUnit
 
 internal fun parseLrc(text: String): List<LyricLine> {
     val stamp = Regex("\\[(\\d{1,3}):(\\d{2})(?:[.:](\\d{1,3}))?]")
+    // A positive offset makes the lyrics appear sooner.
     val offset = Regex("\\[offset:([+-]?\\d+)]", RegexOption.IGNORE_CASE).find(text)?.groupValues?.get(1)?.toLongOrNull() ?: 0
     return text.lineSequence().flatMap { line ->
         val words = line.replace(stamp, "").trim()
@@ -34,24 +35,53 @@ internal fun parseLrc(text: String): List<LyricLine> {
             val seconds = match.groupValues[2].toLong()
             if (seconds >= 60) return@mapNotNull null
             val fraction = match.groupValues[3].padEnd(3, '0').take(3).toLongOrNull() ?: 0
-            LyricLine((match.groupValues[1].toLong() * 60_000 + seconds * 1000 + fraction + offset).coerceAtLeast(0), words)
+            LyricLine((match.groupValues[1].toLong() * 60_000 + seconds * 1000 + fraction - offset).coerceAtLeast(0), words)
         }
     }.sortedBy { it.timeMs }.toList()
 }
 
+/** Older Turkish LRC files are often Windows-1254 rather than UTF-8. */
+internal fun decodeText(bytes: ByteArray): String = try {
+    Charsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes)).toString().removePrefix("\uFEFF")
+} catch (_: java.nio.charset.CharacterCodingException) {
+    String(bytes, java.nio.charset.Charset.forName("windows-1254"))
+}
+
+/** Video titles carry words that lyric databases do not know. */
+internal fun lyricTitle(title: String): String = title
+    .replace(Regex("[(\\[][^)\\]]*(official|video|audio|lyric|visuali[sz]er|klip|remaster|feat\\.?|ft\\.)[^)\\]]*[)\\]]", RegexOption.IGNORE_CASE), "")
+    .replace(Regex("\\s+"), " ").trim().ifBlank { title }
+
 internal class LyricsRepository {
-    @Serializable private data class RemoteLyrics(val plainLyrics: String? = null, val syncedLyrics: String? = null, val instrumental: Boolean = false)
+    @Serializable private data class RemoteLyrics(
+        val plainLyrics: String? = null, val syncedLyrics: String? = null, val instrumental: Boolean = false,
+        val duration: Double? = null,
+    ) {
+        fun document() = LyricsDocument(plainLyrics ?: if (instrumental) "Enstrümantal" else "", parseLrc(syncedLyrics.orEmpty()), "LRCLIB")
+    }
     private val json = Json { ignoreUnknownKeys = true }
     private val client = OkHttpClient.Builder().callTimeout(12, TimeUnit.SECONDS).build()
     private val mutex = Mutex()
     private var nextRequestAt = 0L
+
+    private fun request(url: okhttp3.HttpUrl): String? = runCatching {
+        client.newCall(Request.Builder().url(url)
+            .header("User-Agent", "Metrolist/${AppVersion.NAME} (https://github.com/${AppVersion.REPO})").build()).execute().use { response ->
+            nextRequestAt = System.currentTimeMillis() + 500
+            if (response.code == 429 || response.code == 503) {
+                val seconds = response.header("Retry-After")?.toLongOrNull() ?: 60
+                nextRequestAt = System.currentTimeMillis() + seconds.coerceAtLeast(1) * 1000 + kotlin.random.Random.nextLong(500, 1500)
+            }
+            if (response.isSuccessful) response.body?.string() else null
+        }
+    }.getOrNull()
 
     suspend fun load(track: Track): LyricsDocument = withContext(Dispatchers.IO) {
         track.localPath?.let { path ->
             val file = File(path)
             val lrc = File(file.parentFile, file.nameWithoutExtension + ".lrc")
             if (lrc.isFile) {
-                val text = lrc.readText()
+                val text = decodeText(lrc.readBytes())
                 return@withContext LyricsDocument(text, parseLrc(text), "Yerel LRC")
             }
         }
@@ -69,20 +99,18 @@ internal class LyricsRepository {
                 .addQueryParameter("artist_name", track.artists)
             if (track.album.isNotBlank()) url.addQueryParameter("album_name", track.album)
             if (track.durationMs in 1000..3_600_000) url.addQueryParameter("duration", (track.durationMs / 1000).toString())
-            runCatching {
-                client.newCall(Request.Builder().url(url.build())
-                    .header("User-Agent", "Metrolist/${AppVersion.NAME} (https://github.com/${AppVersion.REPO})").build()).execute().use { response ->
-                    nextRequestAt = System.currentTimeMillis() + 500
-                    if (response.code == 429 || response.code == 503) {
-                        val seconds = response.header("Retry-After")?.toLongOrNull() ?: 60
-                        nextRequestAt = System.currentTimeMillis() + seconds.coerceAtLeast(1) * 1000 + kotlin.random.Random.nextLong(500, 1500)
-                    }
-                    if (!response.isSuccessful) return@use null
-                    val result = json.decodeFromString<RemoteLyrics>(response.body?.string().orEmpty())
-                    LyricsDocument(result.plainLyrics ?: if (result.instrumental) "Enstrümantal" else "",
-                        parseLrc(result.syncedLyrics.orEmpty()), "LRCLIB")
-                }
-            }.getOrNull()
+            val exact = request(url.build())?.let { runCatching { json.decodeFromString<RemoteLyrics>(it) }.getOrNull() }
+            if (exact != null) return@withLock exact.document()
+            // The exact lookup misses extra artists, "(Official Video)" and album differences; search tolerates them.
+            if (nextRequestAt - System.currentTimeMillis() > 2000) return@withLock null
+            delay((nextRequestAt - System.currentTimeMillis()).coerceAtLeast(0))
+            val search = "https://lrclib.net/api/search".toHttpUrl().newBuilder()
+                .addQueryParameter("track_name", lyricTitle(track.title))
+                .addQueryParameter("artist_name", leadArtist(track.artists)).build()
+            val candidates = request(search)?.let { runCatching { json.decodeFromString<List<RemoteLyrics>>(it) }.getOrNull() }.orEmpty()
+            val seconds = track.durationMs / 1000.0
+            candidates.filter { seconds < 1 || it.duration == null || kotlin.math.abs(it.duration - seconds) <= 4 }
+                .sortedByDescending { !it.syncedLyrics.isNullOrBlank() }.firstOrNull()?.document()
         }
         val result = if (synced != null && (synced.plain.isNotBlank() || synced.lines.isNotEmpty())) synced else {
             val plain = if (track.localPath != null) null else runCatching {

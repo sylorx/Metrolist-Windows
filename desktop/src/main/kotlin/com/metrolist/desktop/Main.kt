@@ -1,5 +1,7 @@
 package com.metrolist.desktop
 
+import kotlinx.coroutines.flow.collectLatest
+
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
@@ -51,6 +53,8 @@ fun main() {
             if (priority >= 5) println("${tag ?: "Metrolist"}: $message")
         }
     })
+    val instance = SingleInstance(appDir())
+    if (!instance.acquire()) return
     YouTube.locale = YouTubeLocale(gl = "TR", hl = "tr")
     application {
         val model = androidx.compose.runtime.remember { AppModel() }
@@ -81,6 +85,54 @@ fun main() {
         LaunchedEffect(model.toastShown) {
             if (model.toastShown) toastLive = true
         }
+        var shown by remember { mutableStateOf(true) }
+        var raiseRequest by remember { mutableStateOf(0) }
+        fun quit() {
+            model.rememberPlayback()
+            model.player.stop()
+            exitApplication()
+        }
+        fun reveal() { shown = true; raiseRequest++ }
+        // Application level: these keep working while the main window is hidden in the tray.
+        val current = model.player.current
+        val playing = model.player.isPlaying
+        LaunchedEffect(Unit) {
+            TaskbarMedia.bind { command ->
+                when (command) {
+                    TaskbarMedia.PREVIOUS -> model.player.previous()
+                    TaskbarMedia.TOGGLE -> model.player.toggle()
+                    TaskbarMedia.NEXT -> model.player.next()
+                    TaskbarMedia.WIDGET -> model.setWidget(!model.widgetOn)
+                    TaskbarMedia.SHOW -> reveal()
+                    TaskbarMedia.EXIT -> quit()
+                }
+            }
+            while (true) {
+                kotlinx.coroutines.delay(700)
+                if (instance.takeShowRequest()) reveal()
+            }
+        }
+        LaunchedEffect(playing, current) {
+            TaskbarMedia.sync(playing, current != null, current?.title.orEmpty())
+            MediaKeys.sync(playing, current != null)
+            MediaKeys.describe(current)
+        }
+        if (!showSplash) {
+            var opened by remember { mutableStateOf(true) }
+            LaunchedEffect(current?.id, model.toastOn) {
+                if (opened) {
+                    opened = false
+                    return@LaunchedEffect
+                }
+                if (!model.toastOn || current == null) {
+                    model.toastShown = false
+                    return@LaunchedEffect
+                }
+                model.toastShown = true
+                kotlinx.coroutines.delay(model.toastSeconds * 1000L)
+                if (!model.toastHold) model.toastShown = false
+            }
+        }
         if (showSplash) {
             Window(
                 onCloseRequest = ::exitApplication,
@@ -98,56 +150,53 @@ fun main() {
                 BounceSplash(model.look.palette.accent) { showSplash = false }
             }
         } else {
-            var windowOpen by remember { mutableStateOf(true) }
-            val windowState = rememberWindowState(width = 1280.dp, height = 820.dp)
-            fun closeWindow() {
-                if (TaskbarMedia.trayAvailable()) windowOpen = false else {
-                    model.rememberPlayback(); model.player.stop(); exitApplication()
-                }
+            val saved = model.store.settings
+            val windowState = rememberWindowState(
+                placement = if (saved.windowMaximized) WindowPlacement.Maximized else WindowPlacement.Floating,
+                position = if (model.placeVisible(saved.windowX, saved.windowY)) WindowPosition(saved.windowX.dp, saved.windowY.dp)
+                    else WindowPosition(Alignment.Center),
+                width = saved.windowWidth.coerceIn(720, 8000).dp,
+                height = saved.windowHeight.coerceIn(480, 5000).dp,
+            )
+            fun close() {
+                // Closing keeps the music playing in the tray when there is one.
+                if (TaskbarMedia.trayAvailable()) shown = false else quit()
             }
             Window(
-                onCloseRequest = ::closeWindow,
-                visible = windowOpen,
+                onCloseRequest = ::close,
                 title = "Metrolist",
                 undecorated = true,
+                visible = shown,
                 state = windowState,
+                onKeyEvent = { shortcut(model, it) },
             ) {
-                val playing = model.player.isPlaying
-                val title = model.player.current?.title.orEmpty()
-                val canControl = model.player.current != null
+                LaunchedEffect(raiseRequest) {
+                    if (raiseRequest == 0) return@LaunchedEffect
+                    windowState.isMinimized = false
+                    window.isVisible = true
+                    window.toFront()
+                    window.requestFocus()
+                }
                 LaunchedEffect(Unit) {
-                    TaskbarMedia.bind { command ->
-                        when (command) {
-                            TaskbarMedia.PREVIOUS -> model.player.previous()
-                            TaskbarMedia.TOGGLE -> model.player.toggle()
-                            TaskbarMedia.NEXT -> model.player.next()
-                            TaskbarMedia.WIDGET -> model.setWidget(!model.widgetOn)
-                            TaskbarMedia.SHOW -> { windowOpen = true; windowState.isMinimized = false; window.toFront(); window.requestFocus() }
-                            TaskbarMedia.EXIT -> { model.rememberPlayback(); model.player.stop(); exitApplication() }
+                    window.minimumSize = java.awt.Dimension(720, 480)
+                    androidx.compose.runtime.snapshotFlow { Triple(windowState.position, windowState.size, windowState.placement) }
+                        .collectLatest { (position, size, placement) ->
+                            kotlinx.coroutines.delay(600)
+                            if (windowState.isMinimized || !position.isSpecified) return@collectLatest
+                            model.saveWindow(
+                                position.x.value.toInt(), position.y.value.toInt(),
+                                size.width.value.toInt(), size.height.value.toInt(),
+                                placement != WindowPlacement.Floating,
+                            )
                         }
-                    }
+                }
+                LaunchedEffect(Unit) {
                     TaskbarMedia.attach(window)
                     MediaKeys.install(model.player, window)
                     TaskbarMedia.customFrame(window)
                 }
-                val trackId = model.player.current?.id
-                var opened by remember { mutableStateOf(true) }
-                LaunchedEffect(trackId, model.toastOn) {
-                    if (opened) {
-                        opened = false
-                        return@LaunchedEffect
-                    }
-                    if (!model.toastOn || trackId.isNullOrBlank()) {
-                        model.toastShown = false
-                        return@LaunchedEffect
-                    }
-                    model.toastShown = true
-                    kotlinx.coroutines.delay(model.toastSeconds * 1000L)
-                    if (!model.toastHold) model.toastShown = false
-                }
-                LaunchedEffect(playing, canControl, title) {
-                    TaskbarMedia.sync(playing, canControl, title)
-                    MediaKeys.sync(playing, canControl)
+                LaunchedEffect(Unit) {
+                    TaskbarMedia.sync(model.player.isPlaying, model.player.current != null, model.player.current?.title.orEmpty())
                 }
                 val track = model.player.current
                 val barTitle = if (model.captionText == "song" && track != null) {
@@ -188,7 +237,7 @@ fun main() {
                                 WindowPlacement.Maximized
                             }
                         },
-                        onClose = ::closeWindow,
+                        onClose = ::close,
                     )
                     Box(Modifier.weight(1f).fillMaxWidth()) {
                         MetrolistTheme(model.look) {
@@ -277,7 +326,7 @@ fun main() {
                         val bar = TaskbarMedia.taskbarBounds()
                         val horizontal = bar.width >= bar.height
                         val length = (280 * model.barScale).toInt().coerceIn(180, if (horizontal) bar.width else bar.height)
-                        val thick = (if (horizontal) bar.height else bar.width).coerceIn(32, 96)
+                        val thick = (if (horizontal) bar.height else bar.width).coerceIn(24, 96)
                         val span = (if (horizontal) bar.width else bar.height) - length
                         val start = if (horizontal) bar.x else bar.y
                         val along = if (model.barX >= 0) model.barX.coerceIn(start, start + span.coerceAtLeast(0)) else start + span.coerceAtLeast(0) / 2
@@ -285,7 +334,11 @@ fun main() {
                         else TaskbarMedia.cling(window, bar.x, along, thick, length)
                     }
                     LaunchedEffect(model.barScale, model.barX) {
-                        if (!TaskbarMedia.barDrag) stick()
+                        // Showing the window resets its place once, and the taskbar itself can move or resize later.
+                        while (true) {
+                            if (!TaskbarMedia.barDrag) runCatching { stick() }
+                            kotlinx.coroutines.delay(1_500)
+                        }
                     }
                     TaskbarDock(model)
                 }

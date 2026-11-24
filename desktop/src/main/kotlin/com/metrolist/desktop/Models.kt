@@ -31,6 +31,8 @@ sealed interface Dest {
     data object LocalMusic : Dest
     data object Insights : Dest
     data object Personal : Dest
+    data object Diagnostics : Dest
+    data object Blocked : Dest
     data class Smart(val rule: SmartRule) : Dest
     data class LocalList(val id: String) : Dest
     data class Album(val browseId: String) : Dest
@@ -114,7 +116,15 @@ data class Settings(
     val autoplay: Boolean = true,
     val checkUpdates: Boolean = true,
     val downloadUpdates: Boolean = true,
+    val motion: Boolean = true,
+    val windowX: Int = NO_PLACE,
+    val windowY: Int = NO_PLACE,
+    val windowWidth: Int = 1280,
+    val windowHeight: Int = 820,
+    val windowMaximized: Boolean = false,
 )
+
+const val NO_PLACE = Int.MIN_VALUE
 
 @Serializable
 data class SavedTrack(
@@ -145,6 +155,10 @@ data class LocalLibrary(
     val smartPlaylists: List<SmartPlaylist> = emptyList(),
 )
 
+internal fun leadArtist(artists: String): String = artists.substringBefore(',').trim()
+
+
+
 fun Track.toSaved() = SavedTrack(id, title, artists, thumbnail, durationMs, localPath, album, System.currentTimeMillis())
 
 fun SavedTrack.toTrack() = Track(id, title, artists, thumbnail, durationMs, localPath, album)
@@ -163,7 +177,7 @@ data class HistoryEntry(
 
 fun HistoryEntry.toTrack() = Track(id, title, artists, thumbnail, durationMs, localPath, album)
 
-fun coverUrl(raw: String?): String? {
+fun coverUrl(raw: String?, size: Int = 320): String? {
     val trimmed = raw?.trim().orEmpty()
     if (trimmed.isEmpty()) return null
     var url = if (trimmed.startsWith("//")) "https:$trimmed" else trimmed
@@ -171,14 +185,16 @@ fun coverUrl(raw: String?): String? {
     url = url.replace("maxresdefault", "hqdefault").replace("sddefault", "hqdefault")
     val host = url.substringAfter("://").substringBefore('/')
     if (host.endsWith("googleusercontent.com") || host.endsWith("ggpht.com")) {
-        url = url.substringBefore('=') + "=w320-h320-l90-rj"
+        url = url.substringBefore('=') + "=w$size-h$size-l90-rj"
     }
     return url
 }
 
 fun formatTime(ms: Long): String {
     val total = (ms.coerceAtLeast(0) / 1000).toInt()
-    return "%d:%02d".format(total / 60, total % 60)
+    val hours = total / 3600
+    return if (hours > 0) "%d:%02d:%02d".format(hours, total / 60 % 60, total % 60)
+    else "%d:%02d".format(total / 60, total % 60)
 }
 
 fun itemSubtitle(item: YTItem): String = when (item) {

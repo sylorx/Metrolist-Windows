@@ -7,7 +7,10 @@ kotlin {
     jvmToolchain(21)
 }
 
-val innertubeSources = rootProject.file("../Metrolists-main/innertube/src/main/kotlin")
+// Override with -PmetrolistSources=<path> when the sibling checkout lives elsewhere (for example in a git worktree).
+val innertubeSources = rootProject.file(
+    providers.gradleProperty("metrolistSources").getOrElse("../Metrolists-main") + "/innertube/src/main/kotlin",
+)
 val stubSources = layout.projectDirectory.dir("src/main/kotlin").asFile
 
 kotlin.sourceSets.named("main") {

@@ -60,7 +60,11 @@ class LibraryTools(private val model: AppModel) {
         retrySync()
     }
     fun retrySync() {
-        if (syncing) return
+        if (syncing || store.settings.cookie.isBlank() || store.pendingSync.isEmpty()) {
+            pendingCount = store.pendingSync.size
+            if (pendingCount == 0) syncMessage = null
+            return
+        }
         model.scope.launch {
             syncing = true
             try {
@@ -68,9 +72,28 @@ class LibraryTools(private val model: AppModel) {
                 pendingCount = store.pendingSync.size
                 changed()
             } catch (cancel: CancellationException) { throw cancel }
-            catch (failure: Exception) { syncMessage = "Eşitleme başarısız: ${failure.message}" }
+            catch (failure: Exception) { syncMessage = "Eşitleme başarısız: ${friendlyError(failure)}" }
             finally { syncing = false }
         }
+    }
+    /** A permanently rejected action would otherwise block everything behind it. */
+    fun skipFirstSync() {
+        if (syncing) return
+        val account = accountFingerprint(store.settings.cookie)
+        // Another account's work waits for that account; skipping only ever drops this account's stuck action.
+        val first = firstOwnAction(store.pendingSync, account) ?: return
+        store.completeSync(first.id)
+        pendingCount = store.pendingSync.size
+        syncMessage = null
+        retrySync()
+    }
+    /** True when this account has a waiting action that the skip button could remove. */
+    val canSkip: Boolean get() = store.settings.cookie.isNotBlank() &&
+        firstOwnAction(store.pendingSync, accountFingerprint(store.settings.cookie)) != null
+    fun unlike(tracks: List<SavedTrack>) {
+        store.unlike(tracks.map { it.id }.toSet())
+        tracks.filter { it.localPath == null }.forEach { queueSync(SyncAction("like", value = it.id, enabled = false)) }
+        changed()
     }
     fun createPlaylist(title: String, tracks: List<SavedTrack> = emptyList()): String {
         val created = store.createPlaylist(title, tracks)
@@ -99,11 +122,12 @@ class LibraryTools(private val model: AppModel) {
     }
     fun removeTracks(id: String, ids: Set<String>) {
         store.removeTracks(id, ids); changed()
-        queueSync(SyncAction("remove", id, trackIds = ids.filterNot { it.startsWith("file:") }))
+        val remote = ids.filterNot { it.startsWith("file:") }
+        if (remote.isNotEmpty()) queueSync(SyncAction("remove", id, trackIds = remote))
     }
     fun reorder(id: String, from: Int, to: Int) {
         val list = store.library.playlists.find { it.id == id } ?: return
-        if (from !in list.tracks.indices || to !in list.tracks.indices) return
+        if (from == to || from !in list.tracks.indices || to !in list.tracks.indices) return
         store.updatePlaylist(id) { it.copy(tracks = it.tracks.toMutableList().apply { add(to, removeAt(from)) }) }
         changed()
         queueSync(SyncAction("order", id, trackIds = store.library.playlists.first { it.id == id }.tracks.map { it.id }))
@@ -148,8 +172,13 @@ class LibraryTools(private val model: AppModel) {
             scanning = true; scanProgress = "Müzik dosyaları taranıyor…"
             try {
                 val roots = folders.toList()
+                val known = store.library.localTracks
+                var reportedAt = 0L
                 val result = withContext(Dispatchers.IO) {
-                    LocalMusic.scan(roots) { count, name -> model.scope.launch { scanProgress = "$count parça · $name" } }
+                    LocalMusic.scan(roots, known) { count, name ->
+                        val now = System.currentTimeMillis()
+                        if (now - reportedAt > 100) { reportedAt = now; model.scope.launch { if (scanning) scanProgress = "$count parça · $name" } }
+                    }
                 }
                 // Do not discard a disconnected disk's indexed tracks.
                 val unavailable = store.library.localTracks.filter { song -> roots.any { root ->
@@ -198,7 +227,7 @@ class LibraryTools(private val model: AppModel) {
             fileBusy = true
             try { block() }
             catch (cancel: CancellationException) { throw cancel }
-            catch (failure: Exception) { model.status = "Dosya işlemi başarısız: ${failure.message}" }
+            catch (failure: Exception) { model.status = "Dosya işlemi başarısız: ${friendlyError(failure)}" }
             finally { fileBusy = false }
         }
     }

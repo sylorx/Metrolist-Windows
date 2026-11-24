@@ -41,6 +41,7 @@ internal class AudioProcessor(private val rate: Int, private val channels: Int) 
     private var filters = emptyList<Biquad>()
     private var rms = 0.0225
     private var normalization = 1.0
+    private var level = -1.0
     fun process(data: ByteArray, count: Int, settings: AudioSettings, gain: Float) {
         if (lastBands != settings.bands) {
             lastBands = settings.bands.toList()
@@ -50,6 +51,9 @@ internal class AudioProcessor(private val rate: Int, private val channels: Int) 
             }
         }
         val headroom = 10.0.pow(-(lastBands.maxOrNull() ?: 0f).coerceAtLeast(0f) / 20.0)
+        // Volume and crossfade arrive in coarse steps; glide between them so they are not audible as clicks.
+        if (level < 0) level = gain.toDouble()
+        val glide = 1 - exp(-1.0 / (rate * channels * 0.06))
         val smoothing = 1 - exp(-1.0 / (rate * channels * 2.0))
         for (offset in 0 until count - 1 step 2) {
             val raw = ((data[offset].toInt() and 255) or (data[offset + 1].toInt() shl 8)).toShort().toDouble() / 32768.0
@@ -59,7 +63,8 @@ internal class AudioProcessor(private val rate: Int, private val channels: Int) 
             var sample = raw
             val channel = (offset / 2) % channels
             filters.forEach { sample = it.sample(sample, channel) }
-            val scaled = sample * headroom * normalization * gain
+            level += glide * (gain - level)
+            val scaled = sample * headroom * normalization * level
             val value = (scaled.coerceIn(-1.0, 0.999969) * 32768).toInt()
             data[offset] = value.toByte()
             data[offset + 1] = (value shr 8).toByte()

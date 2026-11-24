@@ -22,15 +22,21 @@ data class SyncAction(
 internal fun accountFingerprint(cookie: String): String = MessageDigest.getInstance("SHA-256")
     .digest(cookie.toByteArray()).joinToString("") { "%02x".format(it) }
 
+/** The first waiting action of this account; actions of other accounts are never touched from here. */
+internal fun firstOwnAction(pending: List<SyncAction>, account: String): SyncAction? = pending.firstOrNull { it.account == account }
+
 /** Actions survive restart and stop at the first failure to preserve edit order. */
 internal class LibrarySync(private val store: Store) {
     private val mutex = Mutex()
     suspend fun drain(): String? = mutex.withLock {
         if (store.settings.cookie.isBlank()) return@withLock null
         val account = accountFingerprint(store.settings.cookie)
-        for (action in store.pendingSync.filter { it.account == account }) {
-            val outcome = runCatching { perform(action) }
-            if (outcome.isFailure) return@withLock "Eşitleme bekliyor: ${outcome.exceptionOrNull()?.message ?: "Bağlantıyı kontrol et"}"
+        // Re-read after every action: edits made while this runs belong to the same pass.
+        while (true) {
+            val action = store.pendingSync.firstOrNull { it.account == account } ?: break
+            try { perform(action) } catch (cancel: kotlinx.coroutines.CancellationException) { throw cancel } catch (failure: Exception) {
+                return@withLock "Eşitleme bekliyor: ${friendlyError(failure)}"
+            }
             store.completeSync(action.id)
         }
         if (store.pendingSync.any { it.account != account }) "Bazı işlemler başka bir oturuma ait; o hesapla giriş yapıldığında gönderilecek." else null
