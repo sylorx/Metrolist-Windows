@@ -179,6 +179,25 @@ class ReliabilityTest {
         assertEquals(mine, firstOwnAction(listOf(other, mine), "mine"))
     }
 
+    @Test fun outputChangesPauseOnUnplugAndFollowTheDefault() {
+        val same = OutputSnapshot("a", true)
+        assertEquals(OutputChange.None, outputChange("a", same, true, true))
+        assertEquals(OutputChange.None, outputChange(null, OutputSnapshot("b", true), true, true))
+        assertEquals(OutputChange.PauseAndReopen, outputChange("head", OutputSnapshot("speaker", false), true, true))
+        assertEquals(OutputChange.Reopen, outputChange("head", OutputSnapshot("speaker", false), true, false))
+        assertEquals(OutputChange.Reopen, outputChange("a", OutputSnapshot("b", true), true, true))
+        assertEquals(OutputChange.None, outputChange("a", OutputSnapshot("b", true), false, true))
+        assertEquals(OutputChange.PauseAndReopen, outputChange("a", OutputSnapshot("b", false), false, true))
+    }
+
+    @Test fun windowsDefaultOutputCanBeRead() {
+        assumeTrue(System.getProperty("os.name").startsWith("Windows"))
+        val first = CoreAudio.snapshot(null)
+        assumeTrue("no audio endpoint on this machine", first?.defaultId != null)
+        assertTrue(CoreAudio.snapshot(first!!.defaultId)!!.previousActive)
+        assertFalse(CoreAudio.snapshot("{0.0.0.00000000}.{not-a-device}")!!.previousActive)
+    }
+
     @Test fun repeatedSongsGetDistinctStableKeys() {
         assertEquals(listOf("a#1", "b#1", "a#2"), occurrenceKeys(listOf("a", "b", "a")) { it })
     }

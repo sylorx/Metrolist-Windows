@@ -284,6 +284,23 @@ class PlaybackControllerTest {
         } finally { f.close() }
     }
 
+    @Test fun reopeningTheOutputKeepsPlaceAndCanPause() = runBlocking {
+        val f = Fixture()
+        try {
+            f.controller.playAll(listOf(track("remote", false)), 0)
+            await { f.controller.isPlaying }
+            val first = f.active()
+            first.positionMs = 30_000; f.now += 1000; f.controller.poll()
+            f.controller.reopenOutput()
+            await { f.controller.isPlaying && f.active() !== first && f.active().positionMs == 30_000L }
+            f.controller.reopenOutput(pause = true)
+            await { f.controller.poll(); !f.controller.busy }
+            delay(60)
+            assertFalse(f.controller.isPlaying)
+            assertEquals(30_000L, f.controller.positionMs)
+        } finally { f.close() }
+    }
+
     @Test fun sleepAfterTrackStopsInsteadOfRepeatingOrAdvancing() = runBlocking {
         val f = Fixture()
         try {

@@ -173,6 +173,22 @@ class AppModel {
             runCatching { org.bytedeco.javacv.FFmpegFrameGrabber.tryLoad() }
             runCatching { resolver.prepare() }
         }
+        // Windows can switch the default output at any time; Java Sound keeps writing to the old one.
+        scope.launch {
+            var known = withContext(Dispatchers.IO) { CoreAudio.snapshot(null) }?.defaultId
+            while (true) {
+                delay(1_500)
+                val previous = known
+                val now = withContext(Dispatchers.IO) { CoreAudio.snapshot(previous) } ?: continue
+                known = now.defaultId
+                val audio = player.audio
+                when (outputChange(previous, now, audio.device.isBlank(), audio.pauseOnUnplug)) {
+                    OutputChange.PauseAndReopen -> { player.reopenOutput(pause = true); status = "Ses aygıtı çıkarıldı; çalma duraklatıldı" }
+                    OutputChange.Reopen -> { player.reopenOutput(); status = "Ses yeni varsayılan aygıta geçti" }
+                    OutputChange.None -> Unit
+                }
+            }
+        }
         // Runs in the model so playback keeps advancing while the window is hidden in the tray.
         scope.launch {
             while (true) {

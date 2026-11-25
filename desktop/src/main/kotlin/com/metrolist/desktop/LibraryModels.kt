@@ -9,6 +9,7 @@ data class AudioSettings(
     val device: String = "",
     val crossfadeSeconds: Int = 0,
     val gapless: Boolean = true,
+    val pauseOnUnplug: Boolean = true,
 )
 
 /** Case, accent and Turkish dotted/dotless-i insensitive form used by every search box. */
