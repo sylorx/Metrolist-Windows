@@ -39,7 +39,7 @@ class AppModel {
         javax.swing.SwingUtilities.invokeLater { status = friendlyError(failure) }
     })
     val store = Store()
-    private val resolver = StreamResolver(appDir())
+    private val resolver = StreamResolver(appDir()) { store.settings.audioCacheMb.coerceAtLeast(0) * 1024L * 1024L }
     internal val updates = Updater(scope, store, notify = TaskbarMedia::announce)
     private val discord = DiscordSession(WindowsDiscordTransport())
     var blocks by mutableStateOf(store.blocks)
@@ -490,6 +490,30 @@ class AppModel {
     }
 
     fun clearDiagnostics() { events = emptyList() }
+
+    var audioCacheMb by mutableStateOf(store.settings.audioCacheMb)
+        private set
+    var audioCacheUsed by mutableStateOf(0L)
+        private set
+
+    fun measureAudioCache() { scope.launch { audioCacheUsed = withContext(Dispatchers.IO) { resolver.audioCache.usage() } } }
+
+    fun changeAudioCache(megabytes: Int) {
+        audioCacheMb = megabytes
+        if (!persist { it.copy(audioCacheMb = megabytes) }) return
+        scope.launch {
+            withContext(Dispatchers.IO) { if (megabytes == 0) resolver.audioCache.clear() else resolver.audioCache.trim() }
+            measureAudioCache()
+        }
+    }
+
+    fun clearAudioCache() {
+        scope.launch {
+            withContext(Dispatchers.IO) { resolver.audioCache.clear() }
+            measureAudioCache()
+            status = "Ses önbelleği temizlendi"
+        }
+    }
 
     fun prepareAdd() { player.current?.let { prepareAdd(listOf(it)) } }
 

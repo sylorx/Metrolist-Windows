@@ -117,6 +117,8 @@ data class Settings(
     val checkUpdates: Boolean = true,
     val downloadUpdates: Boolean = true,
     val motion: Boolean = true,
+    /** Megabytes kept from songs that were listened to; 0 turns the audio cache off. */
+    val audioCacheMb: Int = 1024,
     val windowX: Int = NO_PLACE,
     val windowY: Int = NO_PLACE,
     val windowWidth: Int = 1280,

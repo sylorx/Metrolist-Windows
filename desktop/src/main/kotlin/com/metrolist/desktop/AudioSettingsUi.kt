@@ -91,6 +91,19 @@ internal fun SleepSettings(player: PlaybackController) {
 @Composable
 internal fun DataSettings(model: AppModel) {
     val tools = model.libraryTools
+    StudioCard("Ses önbelleği") {
+        LaunchedEffect(Unit) { model.measureAudioCache() }
+        Text("Dinlediğin şarkıların sesi bu bilgisayarda tutulur; tekrar çalmak ve geri sarmak sunucu beklemez, bağlantı kopsa da o şarkılar çalar. Sınır dolunca en uzun süredir çalınmayan önce silinir.", color = Muted)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            AudioCache.sizes.forEach { (megabytes, label) ->
+                FilterChip(model.audioCacheMb == megabytes, { model.changeAudioCache(megabytes) }, label = { Text(label) })
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Kullanılan: %.1f MB".format(model.audioCacheUsed / 1_048_576.0), color = Color.White, modifier = Modifier.weight(1f))
+            TextButton(onClick = model::clearAudioCache, enabled = model.audioCacheUsed > 0) { Text("Temizle") }
+        }
+    }
     StudioCard("Yedekleme ve taşıma") {
         Text("Beğeniler, listeler, dinleme geçmişi, istatistikler ve görünüm/ses ayarları JSON yedeğine eklenir. Müzik dosyaları ve hesap çerezi eklenmez.", color = Muted)
         Row {
