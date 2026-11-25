@@ -215,6 +215,47 @@ class ReliabilityTest {
         } finally { server.stop(0) }
     }
 
+    @Test fun proxyThatAnswersRangesWithPlain200IsStillCopiedCompletely() = runBlocking {
+        val bytes = ByteArray(2_300_000) { (it % 241).toByte() }
+        val server = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress("127.0.0.1", 0), 0)
+        // Sends only the requested range, but calls it a whole response and gives no Content-Range.
+        server.createContext("/a") { exchange ->
+            val range = exchange.requestHeaders.getFirst("Range")!!.removePrefix("bytes=").split('-')
+            val from = range[0].toInt(); val to = minOf(range[1].toInt(), bytes.lastIndex)
+            exchange.sendResponseHeaders(200, (to - from + 1).toLong())
+            exchange.responseBody.use { it.write(bytes, from, to - from + 1) }
+        }
+        // Reports every piece as the whole file, like one public proxy does.
+        server.createContext("/liar") { exchange ->
+            val range = exchange.requestHeaders.getFirst("Range")!!.removePrefix("bytes=").split('-')
+            val from = range[0].toInt()
+            if (from > bytes.lastIndex) { exchange.sendResponseHeaders(416, -1); exchange.close(); return@createContext }
+            val to = minOf(range[1].toInt(), bytes.lastIndex)
+            exchange.responseHeaders.set("Content-Range", "bytes $from-$to/${to + 1}")
+            exchange.sendResponseHeaders(206, (to - from + 1).toLong())
+            exchange.responseBody.use { it.write(bytes, from, to - from + 1) }
+        }
+        // Stops after the first piece.
+        server.createContext("/short") { exchange ->
+            exchange.sendResponseHeaders(200, 1_048_576)
+            exchange.responseBody.use { it.write(bytes, 0, 1_048_576) }
+        }
+        server.start()
+        try {
+            val directory = temporary.newFolder()
+            val cache = AudioCache(directory, { 1L shl 30 })
+            val base = "http://127.0.0.1:${server.address.port}"
+            cache.download(StreamResolver.Stream("$base/a?clen=${bytes.size}", emptyMap()), File(directory, "full.audio"))
+            assertArrayEquals(bytes, File(directory, "full.audio").readBytes())
+            assertTrue(runCatching { cache.download(StreamResolver.Stream("$base/liar", emptyMap()), File(directory, "liar.audio")) }.isFailure)
+            assertFalse(File(directory, "liar.audio").exists())
+            cache.download(StreamResolver.Stream("$base/liar?clen=${bytes.size}", emptyMap()), File(directory, "known.audio"))
+            assertArrayEquals(bytes, File(directory, "known.audio").readBytes())
+            assertTrue(runCatching { cache.download(StreamResolver.Stream("$base/short?clen=${bytes.size}", emptyMap()), File(directory, "cut.audio")) }.isFailure)
+            assertFalse(File(directory, "cut.audio").exists())
+        } finally { server.stop(0) }
+    }
+
     @Test fun failedCacheCopyLeavesNothingBehind() = runBlocking {
         val server = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress("127.0.0.1", 0), 0)
         server.createContext("/a") { exchange -> exchange.sendResponseHeaders(403, -1); exchange.close() }
