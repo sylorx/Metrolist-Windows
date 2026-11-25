@@ -592,6 +592,7 @@ class PlaybackController(
 /** Names the kind of source without revealing its address. */
 internal fun sourceLabel(stream: StreamResolver.Stream?): String = when {
     stream == null -> "Hazırlanmış kaynak"
+    "audio-cache" in stream.url.replace('\\', '/') -> "Ses önbelleği"
     !stream.url.startsWith("http", ignoreCase = true) -> "Yerel dosya"
     ".googlevideo.com/" in stream.url -> "Doğrudan kaynak"
     else -> "Genel ara sunucu"

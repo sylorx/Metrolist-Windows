@@ -29,7 +29,8 @@ import java.io.File
 import java.util.Properties
 import java.util.concurrent.ConcurrentHashMap
 
-class StreamResolver(dir: File) : PlaybackStreams {
+class StreamResolver(dir: File, cacheLimitBytes: () -> Long = { 0L }) : PlaybackStreams {
+    internal val audioCache = AudioCache(File(dir, "audio-cache"), cacheLimitBytes)
     data class Stream(val url: String, val headers: Map<String, String>)
 
     private val configRepository = FilePlayerConfigRepository(dir)
@@ -48,14 +49,18 @@ class StreamResolver(dir: File) : PlaybackStreams {
     }
 
     override fun forget(videoId: String, quality: String) {
+        audioCache.remove(videoId, quality)
         cache.remove("$videoId|$quality")
     }
 
     override fun keep(videoId: String, quality: String, stream: Stream) {
+        audioCache.keep(videoId, quality, stream)
         remember("$videoId|$quality", stream)
     }
 
-    override fun saved(videoId: String, quality: String): Stream? = cached("$videoId|$quality")
+    /** A copy on disk first, then an address that worked a moment ago. */
+    override fun saved(videoId: String, quality: String): Stream? =
+        audioCache.file(videoId, quality)?.let { Stream(it.path, emptyMap()) } ?: cached("$videoId|$quality")
 
     /**
      * Public proxies and the direct source are asked at the same time, because either one can be blocked or
@@ -100,7 +105,7 @@ class StreamResolver(dir: File) : PlaybackStreams {
 
     override suspend fun resolve(videoId: String, quality: String): Stream {
         val key = "$videoId|$quality"
-        cached(key)?.let { return it }
+        saved(videoId, quality)?.let { return it }
         return openers(videoId, quality).firstOrNull() ?: throw IllegalStateException("Çalınabilir akış bulunamadı")
     }
 
