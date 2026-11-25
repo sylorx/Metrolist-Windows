@@ -257,6 +257,12 @@ class PlaybackController(
     fun toggleQueue() { showQueue = !showQueue }
     fun requestLyrics() { current?.let { loadLyrics(it) } }
     fun toggleLyrics() { showLyrics = !showLyrics; if (showLyrics) current?.let { loadLyrics(it) } }
+    /** Opens the sound again on the current output device, at the same place and in the same play state. */
+    fun reopenOutput(pause: Boolean = false) {
+        if (current == null) return
+        if (pause && wantsPlay) toggle()
+        if (live || busy) startCurrent(positionMs, pauseOnReady = !wantsPlay, reuse = true)
+    }
     fun configureAudio(value: AudioSettings) {
         val previousDevice = audio.device
         audio = Settings(audio = value).validated().audio

@@ -26,6 +26,8 @@ internal fun AudioStudio(model: AppModel) {
             }
         }
         if (audio.device.isNotBlank() && audio.device !in devices) Text("Seçilen aygıt bağlı değil. Varsayılan çıkış kullanılacak.", color = Muted)
+        ToggleSetting("Kulaklık veya aygıt çıkarılınca duraklat", audio.pauseOnUnplug) { tools.configureAudio(audio.copy(pauseOnUnplug = it)) }
+        Text("Windows varsayılan aygıtı değişince ses, varsayılan seçiliyse kendiliğinden yeni aygıta geçer.", color = Muted)
     }
     StudioCard("10 bant ekolayzır") {
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
