@@ -6,6 +6,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -66,6 +67,8 @@ internal class AudioCache(
     internal suspend fun download(stream: StreamResolver.Stream, destination: File) {
         directory.mkdirs()
         val partial = File(directory, destination.name + ".part")
+        // YouTube and the proxies put the real size in the address; it catches a server that quietly sends less.
+        val expected = stream.url.toHttpUrlOrNull()?.queryParameter("clen")?.toLongOrNull()?.takeIf { it > 0 }
         try {
             partial.outputStream().use { output ->
                 var position = 0L
@@ -80,28 +83,38 @@ internal class AudioCache(
                         check(response.code == 206 || response.code == 200) { "HTTP ${response.code}" }
                         val body = response.body ?: error("Boş yanıt")
                         if (response.code == 200) {
-                            // The server ignored the range and sends the whole file at once.
-                            if (position > 0) error("Sunucu parçalı indirmeyi bıraktı")
-                            body.byteStream().copyTo(output)
-                            total = partial.length().coerceAtLeast(output.channel.position())
-                            position = total
+                            val read = body.byteStream().copyTo(output)
+                            check(read > 0) { "Boş parça" }
+                            if (position == 0L && (expected == null || read >= expected)) {
+                                // The server ignored the range and sent the whole file at once.
+                                total = read
+                            } else {
+                                // Some proxies answer a range with 200 but send only the range.
+                                total = expected ?: error("Sunucu parçalı indirmeyi bıraktı")
+                            }
+                            position += read
                         } else {
-                            total = response.header("Content-Range")?.substringAfter('/')?.toLongOrNull() ?: error("Boyut bilinmiyor")
-                            check(total <= MAX_BYTES) { "Dosya çok büyük" }
+                            val reported = response.header("Content-Range")?.substringAfter('/')?.toLongOrNull()
                             val read = body.byteStream().copyTo(output)
                             check(read > 0) { "Boş parça" }
                             position += read
+                            // One public proxy calls each requested piece the whole file and stops after a few pieces.
+                            // Without the real size from the address such a copy cannot be trusted, so it is refused.
+                            check(expected != null || !(read == CHUNK && reported == position)) { "Kaynağın boyutu doğrulanamıyor" }
+                            total = expected ?: reported ?: error("Boyut bilinmiyor")
+                            check(total <= MAX_BYTES) { "Dosya çok büyük" }
                         }
                     }
                 }
                 output.fd.sync()
             }
             check(partial.length() >= MIN_BYTES) { "Kayıt eksik" }
+            check(expected == null || partial.length() == expected) { "Kayıt eksik (${partial.length()}/$expected)" }
             if (!partial.renameTo(destination)) {
                 destination.delete()
                 check(partial.renameTo(destination)) { "Kayıt taşınamadı" }
             }
-            trim()
+            if (destination.parentFile == directory) trim()
         } finally { partial.delete() }
     }
 

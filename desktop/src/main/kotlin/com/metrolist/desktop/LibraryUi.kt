@@ -31,6 +31,14 @@ internal fun TrackActions(model: AppModel, tracks: List<Track>) {
             DropdownMenuItem(text = { Text("Sonraki çal") }, onClick = { model.player.enqueue(tracks, next = true); expanded = false; model.status = "Sonraki çalınacak" })
             DropdownMenuItem(text = { Text("Sıranın sonuna ekle") }, onClick = { model.player.enqueue(tracks); expanded = false; model.status = "Sıraya eklendi" })
             DropdownMenuItem(text = { Text("Listeye ekle…") }, onClick = { expanded = false; model.prepareAdd(tracks) })
+            val remote = tracks.filter { it.localPath == null }
+            if (remote.isNotEmpty()) {
+                val saved = remote.all { model.downloads.isSaved(it.id) }
+                DropdownMenuItem(text = { Text(if (saved) "İndirmeyi kaldır" else "Çevrimdışı için indir") }, onClick = {
+                    expanded = false
+                    if (saved) model.removeDownloads(remote) else model.download(remote)
+                })
+            }
             if (single != null) {
                 DropdownMenuItem(text = { Text(if (model.isLiked(single.id)) "Beğeniyi kaldır" else "Beğen") },
                     onClick = { model.toggleLike(single); expanded = false })
@@ -124,6 +132,12 @@ internal fun SavedTracks(
                 if (heart) Text("Beğenilerin bu bilgisayarda saklanır.", color = Muted)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = { model.player.playAll(shown.map { it.toTrack() }, 0) }, enabled = shown.isNotEmpty()) { Text("Çal") }
+                    val missing = shown.filter { it.localPath == null && !model.downloads.isSaved(it.id) }
+                    if (title != "İndirilenler" && shown.any { it.localPath == null }) {
+                        TextButton(onClick = { model.download(missing.map { it.toTrack() }) }, enabled = missing.isNotEmpty()) {
+                            Text(if (missing.isEmpty()) "İndirildi" else "İndir (${missing.size})")
+                        }
+                    }
                     TextButton(onClick = { model.player.playShuffled(shown.map { it.toTrack() }) }, enabled = shown.isNotEmpty()) { Text("Karıştır") }
                     if (playlistId != null) {
                         TextButton(onClick = { rename = true }) { Text("Adını değiştir") }

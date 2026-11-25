@@ -29,6 +29,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 /** Songs of a remote playlist together with the token of its next page. */
 data class PlaylistState(val page: PlaylistPage, val continuation: String?)
@@ -39,7 +40,14 @@ class AppModel {
         javax.swing.SwingUtilities.invokeLater { status = friendlyError(failure) }
     })
     val store = Store()
-    private val resolver = StreamResolver(appDir()) { store.settings.audioCacheMb.coerceAtLeast(0) * 1024L * 1024L }
+    private val resolver = StreamResolver(
+        appDir(),
+        cacheLimitBytes = { store.settings.audioCacheMb.coerceAtLeast(0) * 1024L * 1024L },
+        downloaded = { id -> downloads.file(id) },
+    )
+    internal val downloads: Downloads by lazy {
+        Downloads(File(appDir(), "downloads"), scope, fetch = { track, target -> resolver.saveFor(track.id, store.settings.quality, target) })
+    }
     internal val updates = Updater(scope, store, notify = TaskbarMedia::announce)
     private val discord = DiscordSession(WindowsDiscordTransport())
     var blocks by mutableStateOf(store.blocks)
@@ -507,6 +515,20 @@ class AppModel {
         }
     }
 
+    fun download(tracks: List<Track>) {
+        val count = downloads.save(tracks.map { it.toSaved() })
+        status = when {
+            count > 0 -> "$count şarkı indiriliyor"
+            tracks.all { it.localPath != null } -> "Yerel dosyalar zaten bu bilgisayarda"
+            else -> "Zaten indirildi"
+        }
+    }
+
+    fun removeDownloads(tracks: List<Track>) {
+        downloads.remove(tracks.map { it.id }.toSet())
+        status = "İndirme kaldırıldı"
+    }
+
     fun clearAudioCache() {
         scope.launch {
             withContext(Dispatchers.IO) { resolver.audioCache.clear() }
@@ -927,7 +949,7 @@ class AppModel {
                 }
             }
             Dest.Liked -> liked = store.library.liked
-            Dest.Shortcuts, Dest.LocalMusic, Dest.Insights, Dest.Diagnostics, Dest.Blocked -> Unit
+            Dest.Shortcuts, Dest.LocalMusic, Dest.Insights, Dest.Diagnostics, Dest.Blocked, Dest.Downloads -> Unit
             is Dest.Smart -> Unit
             Dest.Personal -> Unit
             is Dest.LocalList -> Unit

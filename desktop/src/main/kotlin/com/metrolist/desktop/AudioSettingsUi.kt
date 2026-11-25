@@ -104,6 +104,11 @@ internal fun DataSettings(model: AppModel) {
             TextButton(onClick = model::clearAudioCache, enabled = model.audioCacheUsed > 0) { Text("Temizle") }
         }
     }
+    StudioCard("İndirilenler") {
+        Text("%d şarkı · %.1f MB. İndirilen şarkılar ses önbelleğinden ayrı tutulur ve kendiliğinden silinmez.".format(
+            model.downloads.entries.size, model.downloads.usage() / 1_048_576.0), color = Muted)
+        TextButton(onClick = { model.openRail(Dest.Downloads) }) { Text("İndirilenleri aç") }
+    }
     StudioCard("Yedekleme ve taşıma") {
         Text("Beğeniler, listeler, dinleme geçmişi, istatistikler ve görünüm/ses ayarları JSON yedeğine eklenir. Müzik dosyaları ve hesap çerezi eklenmez.", color = Muted)
         Row {

@@ -33,6 +33,7 @@ sealed interface Dest {
     data object Personal : Dest
     data object Diagnostics : Dest
     data object Blocked : Dest
+    data object Downloads : Dest
     data class Smart(val rule: SmartRule) : Dest
     data class LocalList(val id: String) : Dest
     data class Album(val browseId: String) : Dest

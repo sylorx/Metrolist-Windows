@@ -1,5 +1,6 @@
 package com.metrolist.desktop
 
+import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
@@ -349,6 +350,7 @@ private fun Rail(model: AppModel) {
         Text("Kitaplığın", color = Muted, style = MaterialTheme.typography.labelMedium)
         Spacer(Modifier.height(6.dp))
         NavRow("Beğenilenler", Icons.Default.Favorite, model.current is Dest.Liked, "icons/heart.png", plain = true) { model.openRail(Dest.Liked) }
+        NavRow("İndirilenler", Icons.Default.DownloadDone, model.current is Dest.Downloads) { model.openRail(Dest.Downloads) }
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             items(SmartRule.entries) { rule ->
                 NavRow(rule.title, Icons.AutoMirrored.Filled.QueueMusic, (model.current as? Dest.Smart)?.rule == rule) { model.openRail(Dest.Smart(rule)) }
@@ -553,6 +555,7 @@ private fun Content(model: AppModel, modifier: Modifier) {
                     Dest.Personal -> CompositionLocalProvider(androidx.compose.material3.LocalContentColor provides Color.White) { PersonalLibraryScreen(model) }
                     Dest.Diagnostics -> DiagnosticsScreen(model)
                     Dest.Blocked -> BlockedScreen(model)
+                    Dest.Downloads -> DownloadsScreen(model)
                     is Dest.Smart -> SmartScreen(model, dest.rule)
                     is Dest.LocalList -> LocalListScreen(model, dest.id)
                     is Dest.Album -> AlbumScreen(model, dest)

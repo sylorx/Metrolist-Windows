@@ -29,7 +29,11 @@ import java.io.File
 import java.util.Properties
 import java.util.concurrent.ConcurrentHashMap
 
-class StreamResolver(dir: File, cacheLimitBytes: () -> Long = { 0L }) : PlaybackStreams {
+class StreamResolver(
+    dir: File,
+    cacheLimitBytes: () -> Long = { 0L },
+    private val downloaded: (String) -> File? = { null },
+) : PlaybackStreams {
     internal val audioCache = AudioCache(File(dir, "audio-cache"), cacheLimitBytes)
     data class Stream(val url: String, val headers: Map<String, String>)
 
@@ -58,9 +62,29 @@ class StreamResolver(dir: File, cacheLimitBytes: () -> Long = { 0L }) : Playback
         remember("$videoId|$quality", stream)
     }
 
-    /** A copy on disk first, then an address that worked a moment ago. */
+    /** A song saved for offline listening first, then the cache, then an address that worked a moment ago. */
     override fun saved(videoId: String, quality: String): Stream? =
-        audioCache.file(videoId, quality)?.let { Stream(it.path, emptyMap()) } ?: cached("$videoId|$quality")
+        (downloaded(videoId) ?: audioCache.file(videoId, quality))?.let { Stream(it.path, emptyMap()) } ?: cached("$videoId|$quality")
+
+    /** Saves one song to [destination], reusing the cached copy when there is one. */
+    internal suspend fun saveFor(videoId: String, quality: String, destination: File) {
+        val copy = audioCache.file(videoId, quality)
+        if (copy != null) { copy.copyTo(destination, overwrite = true); return }
+        // A source that cannot prove its file is complete is skipped for the next one.
+        var last: Exception? = null
+        for (stream in openers(videoId, quality) + listOfNotNull(innertube(videoId, quality))) {
+            try {
+                if (!stream.url.startsWith("http", ignoreCase = true)) File(stream.url).copyTo(destination, overwrite = true)
+                else audioCache.download(stream, destination)
+                return
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (failure: Exception) {
+                last = failure
+            }
+        }
+        throw last ?: IllegalStateException("Çalınabilir akış bulunamadı")
+    }
 
     /**
      * Public proxies and the direct source are asked at the same time, because either one can be blocked or
