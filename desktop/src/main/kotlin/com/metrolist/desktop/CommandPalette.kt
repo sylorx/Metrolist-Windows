@@ -94,6 +94,8 @@ internal fun paletteHits(model: AppModel, query: String): List<PaletteHit> {
         PaletteHit(HitKind.Command, "Sana özel", "Kitaplık araması, akıllı listeler ve kişisel DJ") { model.openRail(Dest.Personal) },
         PaletteHit(HitKind.Command, "Kitaplık", "Sayfa") { model.openRail(Dest.Library) },
         PaletteHit(HitKind.Command, "Beğenilenler", "Sayfa") { model.openRail(Dest.Liked) },
+        PaletteHit(HitKind.Command, "İndirilenler", "Çevrimdışı dinleme") { model.openRail(Dest.Downloads) },
+        PaletteHit(HitKind.Command, "Çalan şarkıyı indir", "Çevrimdışı dinleme") { player.current?.let { model.download(listOf(it)) } },
         PaletteHit(HitKind.Command, "Yerel müzik", "Sayfa") { model.openRail(Dest.LocalMusic) },
         PaletteHit(HitKind.Command, "İstatistikler", "Sayfa") { model.openRail(Dest.Insights) },
         PaletteHit(HitKind.Command, "Geçmiş", "Sayfa") { model.openRail(Dest.History) },

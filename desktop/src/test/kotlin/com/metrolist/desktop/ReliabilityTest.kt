@@ -268,6 +268,37 @@ class ReliabilityTest {
         } finally { server.stop(0) }
     }
 
+    @Test fun downloadsSurviveRestartSkipLocalFilesAndRecordFailures() = runBlocking {
+        val directory = temporary.newFolder()
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined)
+        val fetched = mutableListOf<String>()
+        val downloads = Downloads(directory, scope, fetch = { track, target ->
+            if (track.id == "bad") error("403")
+            fetched += track.id; target.writeText("ses " + track.id)
+        }, io = kotlinx.coroutines.Dispatchers.Unconfined)
+        val local = track("local").toSaved().copy(localPath = "C:/m/a.mp3")
+        assertEquals(2, downloads.save(listOf(track("a").toSaved(), track("a").toSaved(), local, track("bad").toSaved())))
+        assertEquals(listOf("a"), fetched)
+        assertEquals(1, downloads.failures)
+        assertTrue(downloads.active.isEmpty())
+        assertTrue(downloads.isSaved("a"))
+        assertEquals("ses a", downloads.file("a")!!.readText())
+        assertEquals(0, downloads.save(listOf(track("a").toSaved())))
+        val reopened = Downloads(directory, scope, fetch = { _, _ -> })
+        assertEquals(listOf("a"), reopened.entries.map { it.track.id })
+        reopened.remove(setOf("a"))
+        assertNull(reopened.file("a"))
+        assertTrue(Downloads(directory, scope, fetch = { _, _ -> }).entries.isEmpty())
+    }
+
+    @Test fun savedSongIsPlayedBeforeAnyServerIsAsked() {
+        val file = temporary.newFile("a.audio").apply { writeText("x") }
+        val resolver = StreamResolver(temporary.newFolder(), downloaded = { id -> file.takeIf { id == "a" } })
+        assertEquals(file.path, resolver.saved("a", "AUTO")!!.url)
+        assertNull(resolver.saved("b", "AUTO"))
+        assertEquals("İndirilen dosya", sourceLabel(StreamResolver.Stream("C:\\Users\\x\\Metrolist\\downloads\\a.audio", emptyMap())))
+    }
+
     @Test fun repeatedSongsGetDistinctStableKeys() {
         assertEquals(listOf("a#1", "b#1", "a#2"), occurrenceKeys(listOf("a", "b", "a")) { it })
     }

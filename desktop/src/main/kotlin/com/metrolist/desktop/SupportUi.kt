@@ -10,6 +10,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -77,6 +78,41 @@ internal fun LoadFailure(model: AppModel) {
     Column(Modifier.padding(vertical = 24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(model.error ?: "Sayfa yüklenemedi", color = Color.White)
         Button(onClick = { model.refresh(force = true) }) { Text("Yeniden dene") }
+    }
+}
+
+@Composable
+internal fun DownloadsScreen(model: AppModel) {
+    val downloads = model.downloads
+    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "%d şarkı · %.1f MB · İnternet olmadan da çalar".format(downloads.entries.size, downloads.usage() / 1_048_576.0),
+                color = Muted, modifier = Modifier.weight(1f),
+            )
+            if (downloads.active.isNotEmpty()) TextButton(onClick = downloads::cancelAll) { Text("İndirmeleri durdur") }
+            var confirm by remember { mutableStateOf(false) }
+            TextButton(onClick = { confirm = true }, enabled = downloads.entries.isNotEmpty()) { Text("Tümünü sil") }
+            if (confirm) androidx.compose.material3.AlertDialog(
+                onDismissRequest = { confirm = false },
+                title = { Text("İndirilenler silinsin mi?") },
+                text = { Text("${downloads.entries.size} şarkının dosyası bu bilgisayardan silinir. Listelerin ve beğenilerin değişmez.") },
+                confirmButton = { TextButton(onClick = { downloads.removeAll(); confirm = false }) { Text("Sil") } },
+                dismissButton = { TextButton(onClick = { confirm = false }) { Text("Vazgeç") } },
+            )
+        }
+        if (downloads.active.isNotEmpty()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                androidx.compose.material3.CircularProgressIndicator(Modifier.size(16.dp), color = Accent, strokeWidth = 2.dp)
+                Spacer(Modifier.width(10.dp))
+                Text("${downloads.active.size} şarkı indiriliyor: ${downloads.active.values.first().title}", color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        if (downloads.failures > 0) Text("${downloads.failures} şarkı indirilemedi. Bağlantıyı kontrol edip yeniden dene.", color = Accent)
+        Box(Modifier.weight(1f)) {
+            SavedTracks(model, "İndirilenler", downloads.entries.map { it.track }.reversed(),
+                "Bir şarkının ••• menüsünden veya bir listenin İndir düğmesiyle çevrimdışı dinlemek için kaydet.")
+        }
     }
 }
 
