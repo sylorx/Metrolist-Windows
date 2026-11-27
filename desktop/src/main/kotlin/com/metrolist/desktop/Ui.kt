@@ -553,6 +553,7 @@ private fun Content(model: AppModel, modifier: Modifier) {
                     Dest.Personal -> CompositionLocalProvider(androidx.compose.material3.LocalContentColor provides Color.White) { PersonalLibraryScreen(model) }
                     Dest.Diagnostics -> DiagnosticsScreen(model)
                     Dest.Blocked -> BlockedScreen(model)
+                    is Dest.Recap -> YearRecapScreen(model, dest.year)
                     is Dest.Smart -> SmartScreen(model, dest.rule)
                     is Dest.LocalList -> LocalListScreen(model, dest.id)
                     is Dest.Album -> AlbumScreen(model, dest)

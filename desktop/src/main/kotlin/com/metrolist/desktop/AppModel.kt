@@ -904,6 +904,7 @@ class AppModel {
             }
             Dest.Liked -> liked = store.library.liked
             Dest.Shortcuts, Dest.LocalMusic, Dest.Insights, Dest.Diagnostics, Dest.Blocked -> Unit
+            is Dest.Recap -> Unit
             is Dest.Smart -> Unit
             Dest.Personal -> Unit
             is Dest.LocalList -> Unit
