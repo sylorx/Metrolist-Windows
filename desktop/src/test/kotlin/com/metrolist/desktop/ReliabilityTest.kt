@@ -179,6 +179,16 @@ class ReliabilityTest {
         assertEquals(mine, firstOwnAction(listOf(other, mine), "mine"))
     }
 
+    @Test fun windowsPanelTimelineIsOnlyResentWhenItWouldBeWrong() {
+        assertTrue(timelineStale(-1, 0, 0, 100_000, -1, true, false, 0))
+        // Playing on schedule: the panel already shows the right place.
+        assertFalse(timelineStale(10_000, 15_000, 15_200, 100_000, 100_000, true, true, 5_000))
+        assertTrue(timelineStale(10_000, 15_000, 60_000, 100_000, 100_000, true, true, 5_000))
+        assertTrue(timelineStale(10_000, 10_000, 10_000, 100_000, 100_000, false, true, 1_000))
+        assertTrue(timelineStale(10_000, 10_000, 10_000, 120_000, 100_000, false, false, 1_000))
+        assertTrue(timelineStale(10_000, 26_000, 26_000, 100_000, 100_000, true, true, 16_000))
+    }
+
     @Test fun repeatedSongsGetDistinctStableKeys() {
         assertEquals(listOf("a#1", "b#1", "a#2"), occurrenceKeys(listOf("a", "b", "a")) { it })
     }
