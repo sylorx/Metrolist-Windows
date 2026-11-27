@@ -117,6 +117,24 @@ fun main() {
             MediaKeys.sync(playing, current != null)
             MediaKeys.describe(current)
         }
+        LaunchedEffect(Unit) {
+            // The panel advances its marker by itself; it only needs the truth again after a jump or a change.
+            var sentPosition = -1L
+            var sentDuration = -1L
+            var sentAt = 0L
+            var sentPlaying = false
+            while (true) {
+                kotlinx.coroutines.delay(1_000)
+                val player = model.player
+                val now = System.currentTimeMillis()
+                val duration = maxOf(player.durationMs, player.current?.durationMs ?: 0L)
+                val expected = sentPosition + if (sentPlaying) now - sentAt else 0L
+                if (timelineStale(sentPosition, expected, player.positionMs, duration, sentDuration, player.isPlaying, sentPlaying, now - sentAt)) {
+                    MediaKeys.timeline(player.positionMs, duration)
+                    sentPosition = player.positionMs; sentDuration = duration; sentAt = now; sentPlaying = player.isPlaying
+                }
+            }
+        }
         if (!showSplash) {
             var opened by remember { mutableStateOf(true) }
             LaunchedEffect(current?.id, model.toastOn) {

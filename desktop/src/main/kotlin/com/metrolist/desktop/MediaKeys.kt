@@ -33,6 +33,8 @@ internal object MediaKeys {
     private var player: PlaybackController? = null
     @Volatile private var controls: Pointer? = null
     @Volatile private var display: Pointer? = null
+    @Volatile private var controls2: Pointer? = null
+    @Volatile private var timelineProps: Pointer? = null
     private var lastDescription: List<String?>? = null
     private val worker = java.util.concurrent.Executors.newSingleThreadExecutor { task ->
         thread(start = false, isDaemon = true, name = "Metrolist-media-info") {
@@ -187,9 +189,101 @@ internal object MediaKeys {
                 }
             }
         }
+        runCatching { bindTimeline(session) }.onFailure { println("Metrolist: zaman çizelgesi kurulamadı ($timelineStep: ${it.message})") }
         controls = session
         sync(lastPlaying, lastActive)
         SwingUtilities.invokeLater { describe(player?.current) }
+    }
+
+    /** ISystemMediaTransportControls2: the timeline and the panel's seek requests. */
+    private var timelineStep = ""
+    private fun bindTimeline(session: Pointer) {
+        timelineStep = "arayüz"
+        val second = Memory(Native.POINTER_SIZE.toLong())
+        val face = IID("EA98D2F6-7F3C-4AF2-A586-72889808EFB1").apply { write() }
+        check(invoke(session, 0, face.pointer, second) >= 0) { "arayüz" }
+        val controls = second.getPointer(0) ?: return
+        timelineStep = "özellik nesnesi"
+        val instance = PointerByReference()
+        withString("Windows.Media.SystemMediaTransportControlsTimelineProperties") {
+            check(Winrt.INSTANCE.RoActivateInstance(it, instance) >= 0) { "özellikler" }
+        }
+        val inspectable = instance.value ?: return
+        timelineStep = "özellik arayüzü"
+        val props = Memory(Native.POINTER_SIZE.toLong())
+        val propsFace = IID("5125316A-C3A2-475B-8507-93534DC88F15").apply { write() }
+        check(invoke(inspectable, 0, propsFace.pointer, props) >= 0) { "özellik arayüzü" }
+        invoke(inspectable, 2)
+        // Answering any other interface makes Windows call methods this small object does not have.
+        timelineStep = "atlama dinleyicisi"
+        val seekHandler = delegate({ raw -> seekInterfaces.any { it.contentEquals(raw) } }) { args ->
+            val position = Memory(8)
+            if (args != null && invoke(args, 6, position) >= 0) seekTo(position.getLong(0) / 10_000)
+        }
+        check(invoke(controls, 13, seekHandler, Memory(8)) >= 0) { "atlama isteği" }
+        timelineProps = props.getPointer(0)
+        controls2 = controls
+    }
+
+    /** Shows where the song is in the Windows panel; the panel moves the marker on by itself while playing. */
+    fun timeline(positionMs: Long, durationMs: Long) {
+        worker.execute {
+            val controls = controls2 ?: return@execute
+            val props = timelineProps ?: return@execute
+            runCatching {
+                val end = durationMs.coerceAtLeast(0) * 10_000
+                invoke(props, 7, 0L)
+                invoke(props, 9, end)
+                invoke(props, 11, 0L)
+                invoke(props, 13, end)
+                invoke(props, 15, positionMs.coerceIn(0, durationMs.coerceAtLeast(0)) * 10_000)
+                invoke(controls, 12, props)
+            }
+        }
+    }
+
+    private fun seekTo(ms: Long) {
+        val target = player ?: return
+        SwingUtilities.invokeLater { runCatching { if (target.current != null) target.seek(ms) } }
+    }
+
+    // IUnknown, IAgileObject and TypedEventHandler<SystemMediaTransportControls, PlaybackPositionChangeRequestedEventArgs>.
+    private val seekInterfaces = listOf(
+        "00000000-0000-0000-C000-000000000046",
+        "94EA2B94-E9CC-49E0-C0FF-EE64CA8F5B90",
+        "44E34F15-BDC0-50A7-ACE4-39E91FB753F1",
+    ).map { guid -> IID(guid).apply { write() }.pointer.getByteArray(0, 16) }
+
+    private fun delegate(accept: (ByteArray) -> Boolean, onInvoke: (Pointer?) -> Unit): Pointer {
+        val query = object : QueryProc {
+            override fun invoke(self: Pointer, riid: Pointer, out: Pointer): Int {
+                if (!accept(riid.getByteArray(0, 16))) {
+                    out.setPointer(0, null)
+                    return 0x80004002.toInt()
+                }
+                out.setPointer(0, self)
+                return 0
+            }
+        }
+        val retain = object : CountProc {
+            override fun invoke(self: Pointer) = 1
+        }
+        val call = object : PressProc {
+            override fun invoke(self: Pointer, sender: Pointer?, args: Pointer?): Int {
+                runCatching { onInvoke(args) }
+                return 0
+            }
+        }
+        pin(query); pin(retain); pin(call)
+        val table = Memory(4L * Native.POINTER_SIZE)
+        table.setPointer(0, CallbackReference.getFunctionPointer(query))
+        table.setPointer(Native.POINTER_SIZE.toLong(), CallbackReference.getFunctionPointer(retain))
+        table.setPointer(2L * Native.POINTER_SIZE, CallbackReference.getFunctionPointer(retain))
+        table.setPointer(3L * Native.POINTER_SIZE, CallbackReference.getFunctionPointer(call))
+        val objectPointer = Memory(Native.POINTER_SIZE.toLong())
+        objectPointer.setPointer(0, table)
+        pin(table); pin(objectPointer)
+        return objectPointer
     }
 
     private fun handler(): Pointer {
@@ -371,6 +465,7 @@ internal object MediaKeys {
         fun WindowsCreateString(source: Pointer, length: Int, out: PointerByReference): Int
         fun WindowsDeleteString(value: Pointer?): Int
         fun RoGetActivationFactory(classId: Pointer?, iid: Pointer, factory: PointerByReference): Int
+        fun RoActivateInstance(classId: Pointer?, instance: PointerByReference): Int
 
         companion object {
             val INSTANCE: Winrt = Native.load("combase", Winrt::class.java)

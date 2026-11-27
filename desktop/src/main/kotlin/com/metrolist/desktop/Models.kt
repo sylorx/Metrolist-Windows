@@ -126,6 +126,13 @@ data class Settings(
 
 const val NO_PLACE = Int.MIN_VALUE
 
+/** True when the Windows panel's marker would be wrong: after a jump, a new length, a pause or resume, or 15 s. */
+internal fun timelineStale(
+    sentPosition: Long, expected: Long, position: Long, duration: Long, sentDuration: Long,
+    playing: Boolean, sentPlaying: Boolean, sinceMs: Long,
+): Boolean = sentPosition < 0 || duration != sentDuration || playing != sentPlaying ||
+    kotlin.math.abs(position - expected) > 1_500 || sinceMs > 15_000
+
 @Serializable
 data class SavedTrack(
     val id: String,
