@@ -179,6 +179,46 @@ class ReliabilityTest {
         assertEquals(mine, firstOwnAction(listOf(other, mine), "mine"))
     }
 
+    @Test fun playlistFilesFromCommonExportersAreRead() {
+        val csv = "\uFEFF\"Track URI\",\"Track Name\",\"Artist Name(s)\",\"Album Name\",\"Duration (ms)\"\n" +
+            "\"spotify:track:1\",\"Gamsız Hayat\",\"Candan Erçetin\",\"Kırık Kalpler\",\"245000\"\n" +
+            "\"spotify:track:2\",\"Say \"\"Yes\"\"\",\"A;B\",\"\",\"200000\"\n"
+        val rows = parsePlaylistFile("liste.csv", csv)
+        assertEquals(2, rows.size)
+        assertEquals(ImportRow("Gamsız Hayat", "Candan Erçetin", "Kırık Kalpler", 245_000), rows[0])
+        assertEquals("Say \"Yes\"", rows[1].title)
+        assertEquals("A,B", rows[1].artist)
+        val takeout = parsePlaylistFile("yt.csv", "Video ID;Title;Duration\ndQw4w9WgXcQ;Never;3:33\n")
+        assertEquals("dQw4w9WgXcQ", takeout.single().videoId)
+        assertEquals(213_000L, takeout.single().durationMs)
+        val m3u = parsePlaylistFile("a.m3u8", "#EXTM3U\n#EXTINF:245,Candan Erçetin - Gamsız Hayat\nC:\\Müzik\\gamsiz.mp3\n" +
+            "#EXTINF:213,Rick Astley - Never\nhttps://music.youtube.com/watch?v=dQw4w9WgXcQ\n")
+        assertEquals("C:\\Müzik\\gamsiz.mp3", m3u[0].localPath)
+        assertEquals(ImportRow("Gamsız Hayat", "Candan Erçetin", durationMs = 245_000, localPath = "C:\\Müzik\\gamsiz.mp3"), m3u[0])
+        assertEquals("dQw4w9WgXcQ", m3u[1].videoId)
+        val text = parsePlaylistFile("l.txt", "# notlar\nTarkan - Şımarık\nhttps://youtu.be/dQw4w9WgXcQ\n\nYalnızca Başlık\n")
+        assertEquals(listOf("Şımarık", "", "Yalnızca Başlık"), text.map { it.title })
+        assertEquals("Tarkan", text[0].artist)
+        assertEquals("dQw4w9WgXcQ", text[1].videoId)
+    }
+
+    @Test fun importMatchingPrefersTheRightArtistAndLengthOverOtherVersions() {
+        val row = ImportRow("Gamsız Hayat", "Candan Erçetin", durationMs = 245_000)
+        val right = Track("a", "Gamsız Hayat", "Candan Erçetin", null, 246_000)
+        val live = Track("b", "Gamsız Hayat (Canlı)", "Candan Erçetin", null, 300_000)
+        val cover = Track("c", "Gamsız Hayat", "Başka Biri", null, 240_000)
+        val other = Track("d", "Hayat", "Candan Erçetin", null, 245_000)
+        assertTrue(matchScore(row, right) >= MATCH_THRESHOLD)
+        assertTrue(matchScore(row, right) > matchScore(row, live))
+        assertTrue(matchScore(row, cover) < MATCH_THRESHOLD)
+        assertTrue(matchScore(row, other) < matchScore(row, right))
+        assertTrue(matchScore(ImportRow("Never Gonna Give You Up (Remastered 2022)", "Rick Astley"), Track("e", "Never Gonna Give You Up", "Rick Astley", null, 213_000)) >= MATCH_THRESHOLD)
+        assertEquals(0, matchScore(ImportRow(""), right))
+        assertTrue(matchScore(ImportRow("Aşk", "Sezen Aksu", durationMs = 252_000), Track("f", "Ey Aşk", "Sezen Aksu", null, 248_000)) < MATCH_THRESHOLD)
+        assertTrue(matchScore(ImportRow("Unutamadım", "Hande Yener", durationMs = 226_000), Track("g", "Unut", "Hande Yener", null, 163_000)) < MATCH_THRESHOLD)
+        assertTrue(matchScore(ImportRow("Kuzu Kuzu", "Tarkan", durationMs = 218_000), Track("h", "Kuzu Kuzu Orijinal Versiyon", "Tarkan", null, 234_000)) >= MATCH_THRESHOLD)
+    }
+
     @Test fun repeatedSongsGetDistinctStableKeys() {
         assertEquals(listOf("a#1", "b#1", "a#2"), occurrenceKeys(listOf("a", "b", "a")) { it })
     }

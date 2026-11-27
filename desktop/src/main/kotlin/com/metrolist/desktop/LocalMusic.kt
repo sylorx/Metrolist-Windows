@@ -15,6 +15,10 @@ import javax.imageio.ImageIO
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 
+/** The same file always gets the same ID, whether it was scanned or imported from a playlist. */
+internal fun localTrackId(canonicalPath: String): String =
+    "file:" + MessageDigest.getInstance("SHA-256").digest(canonicalPath.lowercase().toByteArray()).joinToString("") { "%02x".format(it) }
+
 internal data class ScanResult(val tracks: List<SavedTrack>, val failed: Int)
 internal object LocalMusic {
     private val extensions = setOf("mp3", "flac", "wav", "ogg", "opus", "m4a", "aac", "wma", "aiff")
@@ -60,7 +64,7 @@ internal object LocalMusic {
                             val tags = reader.metadata.entries.associate { it.key.lowercase() to it.value }
                             val title = tags["title"]?.takeIf { it.isNotBlank() } ?: file.nameWithoutExtension
                             val artist = tags["artist"]?.takeIf { it.isNotBlank() } ?: tags["album_artist"] ?: "Bilinmeyen sanatçı"
-                            val id = "file:" + MessageDigest.getInstance("SHA-256").digest(canonical.lowercase().toByteArray()).joinToString("") { "%02x".format(it) }
+                            val id = localTrackId(canonical)
                             val cover = findCover(file) ?: embeddedCover(reader, id.substringAfter(':'))
                             songs += SavedTrack(id, title, artist, cover, (reader.lengthInTime / 1000).coerceAtLeast(0), canonical, tags["album"].orEmpty(), file.lastModified())
                         }

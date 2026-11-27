@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -78,6 +79,40 @@ internal fun LoadFailure(model: AppModel) {
         Text(model.error ?: "Sayfa yüklenemedi", color = Color.White)
         Button(onClick = { model.refresh(force = true) }) { Text("Yeniden dene") }
     }
+}
+
+@Composable
+internal fun ImportDialog(model: AppModel, progress: ImportProgress) {
+    val tools = model.libraryTools
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = {},
+        title = { Text(if (progress.finished) "İçe aktarma bitti" else "“${progress.title}” içe aktarılıyor", maxLines = 2) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.widthIn(max = 520.dp)) {
+                androidx.compose.material3.LinearProgressIndicator(
+                    progress = { progress.done.toFloat() / progress.total.coerceAtLeast(1) },
+                    modifier = Modifier.fillMaxWidth(), color = Accent,
+                )
+                Text("${progress.done}/${progress.total} satır · ${progress.matched} şarkı bulundu", color = Color.White)
+                if (progress.finished) {
+                    Text(
+                        if (progress.playlistId != null) "“${progress.title}” listesi kitaplığına eklendi." else "Hiçbir satır için eşleşen şarkı bulunamadı.",
+                        color = Muted,
+                    )
+                    if (progress.missing.isNotEmpty()) {
+                        Text("Bulunamayanlar (${progress.missing.size}):", color = Color.White)
+                        LazyColumn(Modifier.heightIn(max = 200.dp)) {
+                            items(progress.missing) { Text(it, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                        }
+                    }
+                } else Text("Her satır YouTube Music’te aranıyor; başlık, sanatçı ve süre birlikte tutan sonuç seçilir.", color = Muted)
+            }
+        },
+        confirmButton = {
+            if (progress.finished) TextButton(onClick = tools::closeImport) { Text(if (progress.playlistId != null) "Listeyi aç" else "Kapat") }
+        },
+        dismissButton = { if (!progress.finished) TextButton(onClick = tools::cancelImport) { Text("Vazgeç") } },
+    )
 }
 
 @Composable

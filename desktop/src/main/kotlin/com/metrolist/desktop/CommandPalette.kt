@@ -113,6 +113,7 @@ internal fun paletteHits(model: AppModel, query: String): List<PaletteHit> {
         PaletteHit(HitKind.Command, "Sırayı aç / kapat", "Görünüm") { player.toggleQueue() },
         PaletteHit(HitKind.Command, "Tam ekran oynatıcı", "Görünüm") { if (player.current != null) model.showNowPlaying = true },
         PaletteHit(HitKind.Command, "Yeni çalma listesi", "Kitaplık") { model.showCreate = true },
+        PaletteHit(HitKind.Command, "Liste içe aktar", "M3U, CSV veya metin dosyası") { model.libraryTools.importPlaylist() },
         PaletteHit(HitKind.Command, "Uyku: 30 dakika", "Zamanlayıcı") { player.setSleep(30) },
         PaletteHit(HitKind.Command, "Uyku: parça sonunda dur", "Zamanlayıcı") { player.setSleep(afterTrack = true) },
     )

@@ -221,6 +221,74 @@ class LibraryTools(private val model: AppModel) {
         }
         model.status = "Liste M3U8 olarak kaydedildi"
     }
+    /** State of the import running now, shown in a dialog. */
+    var importing by mutableStateOf<ImportProgress?>(null)
+        private set
+    private var importJob: Job? = null
+
+    fun importPlaylist() {
+        if (importJob?.isActive == true) return
+        importJob = model.scope.launch {
+            val source = chooseFile(filter = FileNameExtensionFilter("Çalma listesi (M3U, CSV, TXT)", "m3u", "m3u8", "csv", "txt")) ?: return@launch
+            val rows = try {
+                withContext(Dispatchers.IO) {
+                    require(source.length() <= 8L * 1024 * 1024) { "Dosya 8 MB sınırını aşıyor" }
+                    parsePlaylistFile(source.name, decodeText(source.readBytes()))
+                }
+            } catch (cancel: CancellationException) { throw cancel } catch (failure: Exception) {
+                model.status = "Liste okunamadı: ${friendlyError(failure)}"; return@launch
+            }
+            if (rows.isEmpty()) { model.status = "Dosyada şarkı bulunamadı"; return@launch }
+            val title = source.nameWithoutExtension.ifBlank { "İçe aktarılan liste" }
+            importing = ImportProgress(title, rows.size)
+            try {
+                val found = arrayOfNulls<SavedTrack>(rows.size)
+                val missing = java.util.Collections.synchronizedList(mutableListOf<ImportRow>())
+                val permits = kotlinx.coroutines.sync.Semaphore(3)
+                kotlinx.coroutines.coroutineScope {
+                    rows.forEachIndexed { at, row ->
+                        launch {
+                            permits.acquire()
+                            try {
+                                val track = withContext(Dispatchers.IO) { findSong(row) }
+                                if (track != null) found[at] = track else missing += row
+                            } finally {
+                                permits.release()
+                                importing = importing?.let { it.copy(done = it.done + 1, matched = found.count { song -> song != null }) }
+                            }
+                        }
+                    }
+                }
+                val tracks = found.filterNotNull().distinctBy { it.id }
+                importing = importing?.copy(finished = true, missing = missing.map { listOf(it.artist, it.title).filter(String::isNotBlank).joinToString(" - ") })
+                if (tracks.isNotEmpty()) {
+                    val id = createPlaylist(title, tracks)
+                    importing = importing?.copy(playlistId = id)
+                }
+            } catch (cancel: CancellationException) {
+                importing = null; throw cancel
+            }
+        }
+    }
+
+    fun cancelImport() { importJob?.cancel(); importing = null }
+
+    fun closeImport() { importing?.playlistId?.let { model.openLocal(it) }; importing = null }
+
+    /** A direct ID or a local file needs no search; otherwise the best song result above the threshold. */
+    private suspend fun findSong(row: ImportRow): SavedTrack? {
+        row.localPath?.let { path ->
+            store.library.localTracks.firstOrNull { it.localPath.equals(path, true) }?.let { return it }
+            val file = File(path)
+            return if (file.isFile) SavedTrack(localTrackId(file.canonicalPath), row.title.ifBlank { file.nameWithoutExtension },
+                row.artist.ifBlank { "Bilinmeyen sanatçı" }, null, row.durationMs, file.canonicalPath, row.album) else null
+        }
+        row.videoId?.let { id ->
+            return SavedTrack(id, row.title.ifBlank { "YouTube $id" }, row.artist.ifBlank { "Bilinmeyen sanatçı" }, null, row.durationMs, album = row.album)
+        }
+        return bestMatch(row)?.toSaved()
+    }
+
     private fun fileOperation(block: suspend () -> Unit) {
         if (fileBusy) return
         model.scope.launch {
@@ -234,13 +302,16 @@ class LibraryTools(private val model: AppModel) {
 }
 
 private fun withJsonExtension(file: File) = if (file.extension.equals("json", true)) file else File(file.parentFile, file.name + ".json")
-internal suspend fun chooseFile(directory: Boolean = false, save: Boolean = false, defaultName: String? = null, playlist: Boolean = false): File? =
+internal suspend fun chooseFile(
+    directory: Boolean = false, save: Boolean = false, defaultName: String? = null, playlist: Boolean = false,
+    filter: FileNameExtensionFilter? = null,
+): File? =
     suspendCancellableCoroutine { continuation ->
         SwingUtilities.invokeLater {
             if (!continuation.isActive) return@invokeLater
             val chooser = JFileChooser().apply {
                 fileSelectionMode = if (directory) JFileChooser.DIRECTORIES_ONLY else JFileChooser.FILES_ONLY
-                if (!directory) fileFilter = FileNameExtensionFilter(if (playlist) "Çalma listesi" else "Metrolist yedeği", if (playlist) "m3u8" else "json")
+                if (!directory) fileFilter = filter ?: FileNameExtensionFilter(if (playlist) "Çalma listesi" else "Metrolist yedeği", if (playlist) "m3u8" else "json")
                 defaultName?.let { selectedFile = File(it) }
             }
             val result = if (save) chooser.showSaveDialog(null) else chooser.showOpenDialog(null)

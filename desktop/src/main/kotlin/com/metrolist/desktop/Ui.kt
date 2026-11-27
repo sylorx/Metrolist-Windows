@@ -269,6 +269,7 @@ fun MetrolistApp(model: AppModel) {
         PlayerBar(model)
     }
     CommandPalette(model)
+    model.libraryTools.importing?.let { ImportDialog(model, it) }
     }
     }
 
@@ -841,6 +842,8 @@ private fun LibraryScreen(model: AppModel) {
                     Text("Kitaplık", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = Color.White)
                     Text("Bu bilgisayar", color = Muted)
                 }
+                TextButton(onClick = model.libraryTools::importPlaylist, enabled = model.libraryTools.importing == null) { Text("Liste içe aktar") }
+                Spacer(Modifier.width(8.dp))
                 RandomButton(libraryTracks.isNotEmpty()) {
                     model.player.playShuffled(libraryTracks)
                     model.status = "Rastgele çalınıyor"
