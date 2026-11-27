@@ -24,6 +24,17 @@ internal fun SavedTrack.matches(query: String): Boolean {
 
 internal fun turkishOrder(): java.text.Collator = java.text.Collator.getInstance(java.util.Locale.forLanguageTag("tr-TR"))
 
+/** Progress of a playlist import; [missing] lists the lines that found no song. */
+data class ImportProgress(
+    val title: String,
+    val total: Int,
+    val done: Int = 0,
+    val matched: Int = 0,
+    val finished: Boolean = false,
+    val missing: List<String> = emptyList(),
+    val playlistId: String? = null,
+)
+
 enum class SmartRule(val title: String) {
     RecentLikes("Son 30 günde beğenilenler"),
     Forgotten("Uzun zamandır dinlenmeyenler"),
