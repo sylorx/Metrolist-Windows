@@ -48,7 +48,12 @@ internal fun InsightsScreen(model: AppModel) {
     LaunchedEffect(Unit) { while (true) { sessions = model.store.sessions; delay(5000) } }
     val summary = remember(days, sessions) { listeningSummary(sessions, days) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text("Dinleme istatistikleri", style = MaterialTheme.typography.headlineMedium, color = Color.White, fontWeight = FontWeight.Bold)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Dinleme istatistikleri", style = MaterialTheme.typography.headlineMedium, color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            recapYears(sessions).firstOrNull()?.let { year ->
+                Button(onClick = { model.open(Dest.Recap(year)) }) { Text("$year özetin") }
+            }
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf(7 to "Bu hafta", 30 to "Son 30 gün", 365 to "Son yıl").forEach { (period, label) ->
                 FilterChip(days == period, { days = period }, label = { Text(label) })

@@ -96,6 +96,7 @@ internal fun paletteHits(model: AppModel, query: String): List<PaletteHit> {
         PaletteHit(HitKind.Command, "Beğenilenler", "Sayfa") { model.openRail(Dest.Liked) },
         PaletteHit(HitKind.Command, "Yerel müzik", "Sayfa") { model.openRail(Dest.LocalMusic) },
         PaletteHit(HitKind.Command, "İstatistikler", "Sayfa") { model.openRail(Dest.Insights) },
+        PaletteHit(HitKind.Command, "Yıllık özet", "Yılın en çok dinlenenleri") { model.open(Dest.Recap()) },
         PaletteHit(HitKind.Command, "Geçmiş", "Sayfa") { model.openRail(Dest.History) },
         PaletteHit(HitKind.Command, "Ayarlar", "Sayfa") { model.openRail(Dest.Settings) },
         PaletteHit(HitKind.Command, "Tanılama", "Çalma sorunları") { model.open(Dest.Diagnostics) },

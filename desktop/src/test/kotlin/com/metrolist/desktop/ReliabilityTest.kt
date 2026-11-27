@@ -8,6 +8,8 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.awt.Rectangle
+import java.time.LocalDate
+import java.time.ZoneId
 import java.io.File
 import javax.sound.sampled.AudioFileFormat
 import javax.sound.sampled.AudioFormat
@@ -177,6 +179,37 @@ class ReliabilityTest {
         val mine = SyncAction("rename", "list", value = "Yeni", account = "mine")
         assertNull(firstOwnAction(listOf(other), "mine"))
         assertEquals(mine, firstOwnAction(listOf(other, mine), "mine"))
+    }
+
+    @Test fun yearRecapCountsOnlyThatYearAndFindsStreaksHoursAndNewArtists() {
+        val zone = ZoneId.of("UTC")
+        fun at(date: String, hour: Int = 12) = LocalDate.parse(date).atTime(hour, 0).atZone(zone).toInstant().toEpochMilli()
+        fun song(id: String, artists: String) = SavedTrack(id, "Şarkı $id", artists)
+        val sessions = listOf(
+            ListeningSession(song("old", "Eski"), at("2025-12-31"), 600_000),
+            ListeningSession(song("a", "Tarkan"), at("2026-03-01"), 3_600_000),
+            ListeningSession(song("a", "Tarkan"), at("2026-03-02"), 1_800_000),
+            ListeningSession(song("b", "Sezen Aksu, Tarkan"), at("2026-03-03"), 1_200_000),
+            ListeningSession(song("c", "Eski"), at("2026-07-10"), 600_000),
+        )
+        val history = listOf(
+            HistoryEntry("b", "Şarkı b", "Sezen Aksu, Tarkan", playedAt = at("2026-03-03", 23)),
+            HistoryEntry("a", "Şarkı a", "Tarkan", playedAt = at("2026-01-02", 23)),
+            HistoryEntry("old", "Şarkı old", "Eski", playedAt = at("2025-12-31", 9)),
+        )
+        val recap = yearRecap(sessions, history, 2026, zone)
+        assertEquals(listOf(2026, 2025), recapYears(sessions, zone))
+        assertEquals(7_200_000L, recap.totalMs)
+        assertEquals(3, recap.tracks)
+        assertEquals(listOf("a", "b", "c"), recap.topTracks.map { it.first.id })
+        assertEquals("Tarkan", recap.topArtists.first().first)
+        assertEquals(6_600_000L, recap.topArtists.first().second)
+        assertEquals(3, recap.longestStreak)
+        assertEquals(java.time.Month.MARCH, recap.topMonth!!.first)
+        assertEquals(23, recap.favoriteHour)
+        assertEquals("a", recap.firstSong!!.id)
+        assertEquals(2, recap.newArtists)
+        assertEquals(0L, yearRecap(sessions, history, 2024, zone).totalMs)
     }
 
     @Test fun repeatedSongsGetDistinctStableKeys() {
